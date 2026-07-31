@@ -1,0 +1,12 @@
+# RemObjects Elements / EBuild build output — trial license does not permit
+# distributing built binaries, so these must never be committed.
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Water IDE user-specific files
+*.suo
+*.user
+.vs/
