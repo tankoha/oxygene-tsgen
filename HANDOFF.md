@@ -199,6 +199,16 @@ Web検索ツールを用いて調査した内容です (2026年7月時点)。Rem
 
 ## 4. Phase 2 (実装フェーズ) が最初に着手すべきタスクの優先順位
 
+**実機検証タスク (1, 2, 2.5) の実施環境について (2026-08-01時点でのメモ):**
+これらはOxygeneのビルド・IL逆アセンブル・ローカルSDK同梱物の確認など、実際の
+開発環境 (RemObjects Elements/Water) が必要なため、この設計フェーズのセッション
+(Web/CLI環境) では実施できない。次回セッションは、Elements/Waterがインストール
+済みのWindows機でClaudeデスクトップアプリ (Codeタブ) を使って行う想定。
+Codeタブのローカルセッションはサンドボックス化されておらず、CLI版のClaude Codeと
+同等にローカルのシェルコマンド・ファイルシステムにアクセスできることを確認済み。
+ただしWindowsでBashを使うには事前に [Git for Windows](https://git-scm.com/downloads/win)
+のインストールが必要 (未インストール時はPowerShellにフォールバックする)。
+
 1. **【最優先・ブロッカー解消】Oxygene(Echoes)のNRT出力を実機検証する。**
    小さなOxygeneプロジェクトを作成し、`nullable`/`not nullable` を使った
    クラスをビルド、IL逆アセンブルで `NullableAttribute`/
