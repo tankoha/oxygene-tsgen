@@ -1,5 +1,7 @@
 # oxygene-tsgen 設計書 (Phase 1)
 
+> 🇬🇧 [English version](./DESIGN.md)
+
 **ステータス**: 設計フェーズ完了。実装 (Phase 2) 未着手。
 **対象**: 最大構成 (フルスコープ) の設計。MVP範囲は本書末尾で明示する。
 **実装言語**: Oxygene (RemObjects Elements, `.NET` ターゲット = **Echoes** バックエンド)。
