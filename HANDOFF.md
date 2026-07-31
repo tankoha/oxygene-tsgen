@@ -84,6 +84,25 @@
   発見性を考慮)。将来的にOSS公開を強く意識するなら英語版READMEの追加も
   検討の余地あり (Phase 2以降の判断事項として残す)。
 
+### 2.8 DESIGN.mdの英訳 (追記: 別セッションでの作業)
+
+- `docs/DESIGN.md` (旧: 日本語版) は `docs/DESIGN_jp.md` にリネームした上で、
+  新規に英語版 `docs/DESIGN.md` を全文翻訳で作成した。両ファイルは相互に
+  冒頭リンクを持つ (🇯🇵/🇬🇧)。今後 `docs/DESIGN.md` が「主」、
+  `docs/DESIGN_jp.md` が日本語訳という位置づけになる。
+- `README.md` 内の `docs/DESIGN.md#10-mvpスコープと将来拡張の境界線`
+  (日本語見出しのMarkdownアンカー) は英訳により見出しが変わるため壊れる問題が
+  あった。**案B (英語版DESIGN.mdの英語見出しアンカーに向け直す)** を採用し、
+  `docs/DESIGN.md#10-mvp-scope-and-the-boundary-for-future-extensions` に修正した。
+  - 理由: README冒頭は既に英語サマリを含んでおり、`docs/DESIGN.md` という
+    ファイル名で参照されるデフォルトの設計書は英語版とする方針に合わせた。
+    日本語で読みたい読者は各ファイル冒頭の言語切り替えリンクから
+    `DESIGN_jp.md` に遷移できるため、README側のリンクを日本語版に
+    向け直す (案A) 必要性は薄いと判断した。
+- 本セクション以外の `docs/DESIGN.md §X` という記述 (URLアンカーを伴わない
+  セクション番号参照) は、英語版・日本語版で見出し番号の構成が完全に
+  一致しているため修正不要 (指示通り)。
+
 ---
 
 ## 3. Oxygeneの `System.Reflection` 互換性について調査中に見つかった制約・注意点

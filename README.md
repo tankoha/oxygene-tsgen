@@ -57,7 +57,7 @@ Oxygene (Object Pascal 系言語、.NET ターゲットの Echoes バックエ�
 - nullable参照型の反映
 - 名前空間 → ESモジュール階層での `.d.ts` 出力
 
-詳細は [`docs/DESIGN.md` §10](docs/DESIGN.md#10-mvpスコープと将来拡張の境界線)
+詳細は [`docs/DESIGN.md` §10](docs/DESIGN.md#10-mvp-scope-and-the-boundary-for-future-extensions)
 を参照してください。
 
 ## ディレクトリ構成
@@ -68,7 +68,8 @@ oxygene-tsgen/
 ├── LICENSE                   # MIT
 ├── HANDOFF.md                 # セッション間の申し送り事項
 ├── docs/
-│   └── DESIGN.md              # 設計書 (Phase 1 成果物)
+│   ├── DESIGN.md               # 設計書 (Phase 1 成果物、英語版)
+│   └── DESIGN_jp.md            # 設計書 (日本語版)
 ├── src/                       # 実装 (Phase 2、現時点では空)
 ├── tests/                     # テスト (Phase 2、現時点では空)
 └── .github/
