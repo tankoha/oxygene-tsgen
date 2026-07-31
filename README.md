@@ -32,7 +32,7 @@ form-validation-error types (see below). **Note**: which ASP.NET Core Inertia
 adapter (InertiaNetCore / InertiaCore / inertia-dotnet / etc.) and which
 frontend framework (React / Vue / Svelte) to target are still open decisions —
 see [`docs/DESIGN.md` §11](docs/DESIGN.md#11-open-questions) /
-[`HANDOFF.md` §6.4](HANDOFF.md#64-未決事項).
+[`HANDOFF.md` §6.4](HANDOFF.md#64-open-questions).
 
 .NET アセンブリ (`*.dll`) をリフレクションで読み込み、TypeScript の型を生成する
 CLI ツールです。最近のスコープ絞り込み ([`HANDOFF.md`](HANDOFF.md) §6 参照) により、
@@ -45,7 +45,7 @@ CLI ツールです。最近のスコープ絞り込み ([`HANDOFF.md`](HANDOFF.
 (InertiaNetCore / InertiaCore / inertia-dotnet 等) や想定フロントエンドフレームワーク
 (React / Vue / Svelte) はまだ未決定です。詳細は
 [`docs/DESIGN.md` §11](docs/DESIGN.md#11-open-questions) /
-[`HANDOFF.md` §6.4](HANDOFF.md#64-未決事項) を参照してください。
+[`HANDOFF.md` §6.4](HANDOFF.md#64-open-questions) を参照してください。
 
 Beyond Page Props themselves, the design also covers (see
 [`docs/DESIGN.md`](docs/DESIGN.md) / [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md)
@@ -166,7 +166,8 @@ See [`docs/DESIGN.md` §10](docs/DESIGN.md#10-mvp-scope-and-the-boundary-for-fut
 oxygene-tsgen/
 ├── README.md
 ├── LICENSE                   # MIT
-├── HANDOFF.md                 # Handoff notes between sessions / セッション間の申し送り事項
+├── HANDOFF.md                 # Handoff notes (English) / セッション間の申し送り事項 (英語版)
+├── HANDOFF_jp.md               # Handoff notes (Japanese) / セッション間の申し送り事項 (日本語版)
 ├── docs/
 │   ├── DESIGN.md               # Design document (English) / 設計書 (英語版)
 │   └── DESIGN_jp.md            # Design document (Japanese) / 設計書 (日本語版)

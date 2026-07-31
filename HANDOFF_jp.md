@@ -1,5 +1,7 @@
 # HANDOFF: oxygene-tsgen
 
+> 🇬🇧 [English version](./HANDOFF.md)
+
 このファイルはセッション間 (Fable5による設計フェーズ → Sonnetによる実装フェーズ、
 以降も) の申し送り用です。Phase 2 着手セッションは、まずこのファイルと
 `docs/DESIGN.md` を読んでから作業を開始してください。
@@ -332,3 +334,146 @@ Codeタブのローカルセッションはサンドボックス化されてお�
 - 既存の §8（汎用API連携）をInertia向けに置き換えるか、別モードとして
   両立させるかは要判断（オーバーエンジニアリング回避の観点では、
   当面Inertia向けに一本化する方がMVPとしてはシンプル）。
+
+---
+
+## 7. タスク2.5 実施結果: SDK同梱物のLSP/AST-dump機能調査 (Windows実機, 2026-08-01)
+
+環境: RemObjects Elements 13.0.0.3101 (develop),
+`C:\Program Files (x86)\RemObjects Software\Elements\`
+
+### 7.1 調査方法
+
+- `bin/` 配下をファイル名パターン (server/lsp/ast/dump) で検索
+  → 該当したのはData Abstract (別製品) の`ServerAccess`テンプレートのみで、
+  言語サーバーとは無関係と判断。
+- `EBuild.exe --help` を確認 → AST dump/parse-only系の隠しフラグはなし。
+  `--host` (インタラクティブホストモード) が存在するが、用途は未検証
+  (インクリメンタルビルド高速化目的の可能性が高く、AST公開用ではなさそう)。
+- 主要DLL (`RemObjects.Elements.Compiler.dll`, `RemObjects.Elements.dll`,
+  `RemObjects.Elements.Oxygene.dll`, `RemObjects.Elements.Tools.dll` 等) を
+  .NETリフレクションでロードし、AST/Syntax/Parser/Tokenizer/LanguageServer
+  関連の型名を検索。
+
+### 7.2 発見事項
+
+1. **【重要】公開・インスタンス化可能な本物のOxygeneトークナイザーが存在する。**
+   `RemObjects.Elements.Oxygene.dll` の
+   `RemObjects.Elements.Code.Oxygene.Tokenizer`
+   (コンストラクタ引数: `RemObjects.Elements.Code.TokenStream`、
+   これも `public`) は `public` クラスで、IDE自身が補完に使う本番品質の
+   レキサー。トークン種別・行/列位置を取得できる。
+   → §2.9で保留にした「軽量ソーステキストスキャン」は、**自作の正規表現/
+   簡易tokenizerではなく、この公式Tokenizerに乗る方式を推奨**。文字列
+   リテラル・コメント・補間文字列を正しく無視した上で `nullable`/
+   `not nullable` トークン検出や `Inertia.Render(...)` 呼び出し検出の
+   括弧対応ができ、自作字句解析より言語仕様追従コストが大幅に下がる。
+   ただし構文木 (式のネスト構造) までは提供しないため、複数行にまたがる
+   呼び出しやジェネリクスの `<>` 判定は、トークン列の上に軽量パーサーを
+   自前で被せる必要が残る (フルパーサーよりは遥かに軽量で済む)。
+
+2. **コンパイラ内部にAST的なノード型が公開型として大量に存在する
+   (`RemObjects.Elements.Compiler.dll`)。**
+   `RemObjects.Elements.Code.CallExpressionTransform`,
+   `IfStatementTransform`, `TypeStatementTransform`,
+   `MethodStatementTransform` 等、式/文の種類ごとの型が `public`
+   としてエクスポートされている。ただしこれらはコンパイラのパス変換
+   パイプライン内部のノード型であり、Roslynの
+   `SyntaxFactory.ParseSyntaxTree` に相当する「ソース文字列→構文木」の
+   単純な公開エントリポイントは見当たらなかった。完全なコンパイル
+   ユニット/プロジェクトコンテキストのセットアップが必要になる可能性が
+   高く、簡単に呼び出せる代物ではなさそう (深追いしていない、要追加調査)。
+
+3. **`RemObjects.Elements.Tools.dll` に `IOxygeneCodeModelParser`
+   (`Parse(string) : System.CodeDom.CodeCompileUnit`) が存在するが、
+   実装クラス名が `WinFormsCodeParser` であり、WinFormsデザイナー用の
+   宣言的コード (`InitializeComponent()` 相当) を読み書きするための
+   CodeDOMベースの限定的パーサーと判断される。** CodeDOMは表現力が
+   限定的で一般的な式評価をサポートしないため、任意のメソッド本体内の
+   `Inertia.Render(...)` 呼び出し検出のような汎用解析には向かない。
+
+4. 独立したLSP実装や「AST-dump専用の隠しCLIフラグ」は見つからなかった。
+   Water/Fire IDEの補完機能は、おそらく上記2のコンパイラ内部コード品質
+   チェック機構をホストプロセス内で直接呼び出しており、外部プロセス向け
+   LSPサーバーとしては切り出されていない模様。
+
+### 7.3 §2.9・§4への影響 (方針)
+
+- 「軽量ソーステキストスキャン」案は、**公式 `RemObjects.Elements.Code.
+  Oxygene.Tokenizer` をベースにする方式**で採用する方向性を推奨する。
+  この判断により、reflection方式との比較検討 (§2.9の判断保留事項) を
+  Phase 2の早い段階で再開できる。
+- フルAST方式 (上記2) は公開エントリポイントが不明瞭で追加調査コストが
+  高いため、当面は見送り、Phase 2後半で余力があれば再検証する。
+
+---
+
+## 8. タスク1 実施結果: OxygeneのNRT出力を実機検証 (Windows実機, 2026-08-01)
+
+**結論 (最重要ブロッカー解消): OxygeneのEchoesバックエンドは、`nullable`/
+`not nullable` の情報をコンパイル済みアセンブリのメタデータに一切出力
+しない。** `NullableAttribute`/`NullableContextAttribute` はおろか、
+それに類する独自の属性・カスタム修飾子 (modopt/modreq) も一切見つから
+なかった。§3-2の未検証事項は「Roslynと異なる独自属性を使っている」では
+なく、「**そもそもIL/メタデータに何の痕跡も残さない**」という、
+設計への影響がより大きい結果で確定した。
+
+### 8.1 検証方法
+
+1. `nullable String` / `not nullable String` を使ったフィールド・プロパティ・
+   メソッド引数/戻り値を持つ最小クラスライブラリプロジェクトを作成
+   (`.elements` プロジェクトファイル、`TargetFramework=.NETStandard`,
+   `Mode=Echoes`)。
+2. `EBuild.exe` でビルド (Release構成)。ビルド時点で判明した副次的事実:
+   **`not nullable` なフィールド/プロパティは宣言時の初期化がコンパイラに
+   強制される** (`E: Not nullable type requires initialization`) —
+   すなわちnullableチェック自体はOxygeneコンパイラが実際に強制する
+   本物の言語機能である (見せかけの構文ではない)。
+3. 生成された `NrtProbe.dll` を .NET リフレクション
+   (`System.Reflection.Assembly.LoadFile` + `CustomAttributeData`) で検査し、
+   アセンブリ/モジュール/型/フィールド/プロパティ/メソッド引数・戻り値の
+   全レベルでカスタム属性を列挙。あわせて `GetOptionalCustomModifiers()` /
+   `GetRequiredCustomModifiers()` でmodopt/modreqも確認。
+
+### 8.2 検証結果
+
+- アセンブリレベル属性: `DebuggableAttribute`, `TargetFrameworkAttribute` のみ
+  (Nullable関連なし)。
+- モジュールレベル属性: なし。
+- 型レベル属性 (`NrtProbe.Sample`): なし。
+- フィールド属性: `NullableField` / `NotNullableField` / `PlainField`
+  いずれも属性なし (プロパティの自動生成バッキングフィールドには
+  `CompilerGeneratedAttribute` のみ付与、Nullableとは無関係)。
+- プロパティ属性: `NullableProp` / `NotNullableProp` / `PlainProp`
+  いずれも属性なし。
+- メソッド引数・戻り値属性: `NullableParamMethod` / `NotNullableParamMethod`
+  いずれの引数・戻り値にも属性なし。
+- フィールドの custom modifiers (modopt/modreq): 全フィールドで空。
+- アセンブリ内に `Nullable` を含む名前の型定義 (Roslynが旧TFM向けに
+  埋め込むことがある `NullableAttribute`/`NullableContextAttribute` の
+  自前定義) も存在しない。
+- `ildasm` 等での生IL相互検証はツール未導入のため実施していないが、
+  `CustomAttributeData` はメタデータテーブルを直接読む方式であり、
+  上記の「属性なし」という結果自体はこれ単独で確定的と判断してよい。
+
+### 8.3 設計への影響 (`docs/DESIGN.md` §4 の見直しが必要)
+
+- **reflectionベースの `INullabilityProvider` チェーンだけでは、Oxygene
+  自身が書いたコードのNRT情報を一切復元できない。** `RoslynStyleAttribute
+  Provider` はOxygene製アセンブリに対しては常に "Unknown" を返すことになる
+  (C#で書かれた依存先アセンブリに対してのみ有効)。
+- 本ツールの主要ユースケース (Inertia.jsのPage Props/Controller自体が
+  Oxygene製、§6参照) では、**NRT情報が必要ならソースレベルでの検出が
+  必須**という結論になる。ここで §7 (タスク2.5) で見つけた公式
+  `RemObjects.Elements.Code.Oxygene.Tokenizer` が直接活きる: `nullable`/
+  `not nullable` トークンをソースから拾う軽量スキャン方式を、
+  `INullabilityProvider` チェーンの実質唯一の実用的な実装として
+  最優先で採用する必要がある (reflectionベースの代替案は同アセンブリ内
+  Oxygeneコードに対しては機能しないため)。
+- `docs/DESIGN.md` §4.2/§4.3 (「安全側 vs 有用性側、`--nrt-unknown-policy`
+  で選択可能にする」という設計) はそのまま活きるが、"Unknown" ケースが
+  「稀な例外」ではなく「reflection経路では常時発生する既定状態」に
+  近い扱いになる点は明記しておく必要がある。
+- 次にDESIGN.mdへ手を入れるセッションは、本セクションの結果を踏まえて
+  `INullabilityProvider` の初期実装を「トークンスキャン方式」を主軸に
+  据える形で §4 を更新すること。
