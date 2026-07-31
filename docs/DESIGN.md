@@ -44,63 +44,31 @@
 
 ### 1.1 コンポーネント分割
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                              CLI Frontend                            │
-│  (引数解析 / 設定ファイル読込 / サブコマンド dispatch: generate,      │
-│   watch, check, init-config)                                         │
-└───────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Configuration Resolver                       │
-│  (tsgen.config.* を読込み、Loader/Mapper/Emitter 各層のオプションと   │
-│   プラグイン一覧を確定した実行コンテキスト (ResolvedConfig) を生成)   │
-└───────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 1: Assembly Loader                                            │
-│  - 対象アセンブリ + 依存アセンブリをメタデータのみで読み込む          │
-│    (実行はしない。MetadataLoadContext 相当の仕組みを利用/自作)        │
-│  - 出力: RawAssemblyModel (Type[] の素の反射結果に近い形)             │
-└───────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 2: Semantic Analyzer / IR Builder                             │
-│  - 型・メンバー・属性・XMLドキュメントコメント(.xml)を統合し、        │
-│    ツール内部の中間表現 (IR: IrModule / IrType / IrMember 等) を構築  │
-│  - NRT解析、循環参照検出、ジェネリクス解決、enum戦略判定 はここで実施  │
-│  - 出力: IrAssembly (安定した内部モデル。Emitter はこれだけを見る)     │
-└───────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 3: Type Mapping Layer (Pluggable)                             │
-│  - IrType → TsTypeExpression への変換ルールを解決                    │
-│  - 組み込みルール + カスタムオーバーライド + プラグイン提供ルールの   │
-│    優先順位付きチェーン (詳細 §3)                                    │
-└───────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 4: Emitters (出力形式ごとに分離・並列実行可能)                 │
-│  ┌───────────────┐ ┌────────────────┐ ┌───────────────────────────┐ │
-│  │ DtsEmitter     │ │ SchemaEmitter   │ │ ApiClientEmitter          │ │
-│  │ (.d.ts生成)    │ │ (zod/io-ts等)   │ │ (fetchラッパー関数生成)    │ │
-│  └───────────────┘ └────────────────┘ └───────────────────────────┘ │
-│  - いずれも IrAssembly + TypeMappingResolver を入力とする              │
-│  - 出力構成 (namespace→module階層、単一/分割ファイル) はここで決定    │
-└───────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Stage 5: Writer / Diff Engine                                       │
-│  - ファイルシステムへの書き出し、または `--check` モードでは既存の    │
-│    生成物とのdiffのみ計算して非ゼロ終了コードを返す (CI用)            │
-│  - インクリメンタル生成用のキャッシュ (入力ハッシュ→出力) もここで管理│
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    CLI["CLI Frontend<br/>引数解析 / 設定ファイル読込 /<br/>サブコマンドdispatch<br/>(generate, watch, check, init-config)"]
+    CFG["Configuration Resolver<br/>tsgen.config.* を読込み、各層のオプションと<br/>プラグイン一覧を確定したResolvedConfigを生成"]
+    S1["Stage 1: Assembly Loader<br/>対象+依存アセンブリをメタデータのみで読込<br/>(実行はしない。MetadataLoadContext相当を利用/自作)<br/>出力: RawAssemblyModel"]
+    S2["Stage 2: Semantic Analyzer / IR Builder<br/>型・メンバー・属性・XMLドキュメントを統合<br/>NRT解析・循環参照検出・ジェネリクス解決・enum戦略判定<br/>出力: IrAssembly"]
+    S3["Stage 3: Type Mapping Layer (Pluggable)<br/>IrType→TsTypeExpressionへの変換ルール解決<br/>組み込み+カスタムオーバーライド+プラグインのチェーン(§3)"]
+
+    subgraph S4["Stage 4: Emitters (出力形式ごとに分離・並列実行可能)"]
+        direction LR
+        S4DTS["DtsEmitter<br/>(.d.ts生成)"]
+        S4SCHEMA["SchemaEmitter<br/>(zod/io-ts等)"]
+        S4API["ApiClientEmitter<br/>(fetchラッパー関数生成)"]
+    end
+
+    S5["Stage 5: Writer / Diff Engine<br/>ファイル書き出し、または--checkモードで<br/>既存生成物とのdiffのみ計算(CI用)<br/>インクリメンタル生成キャッシュ管理"]
+
+    CLI --> CFG --> S1 --> S2 --> S3 --> S4
+    S4DTS --> S5
+    S4SCHEMA --> S5
+    S4API --> S5
+
+    Watcher["Watcher<br/>(dllのmtime監視 / dotnet build連携)"] -.->|変更検出時にStage1以降を再実行| S1
+    PluginHost["Plugin Host<br/>(プラグインの検出・ロード・ライフサイクル管理)"] -.->|拡張ポイントへ登録| S3
+    Diag["Diagnostics<br/>(全ステージ共通のログ/警告/エラー収集)"] -.->|未対応型・循環参照の警告等を集約| S2
 ```
 
 補助コンポーネント (上記パイプラインの外側):
@@ -161,16 +129,25 @@ type
 
 ### 2.2 ルール解決の優先順位チェーン
 
-```
-1. ユーザー定義オーバーライド (tsgen.config で型のFQN指定によるオーバーライド)
-2. プラグインが登録したルール (登録順。後勝ちではなく「最初にCanHandleしたもの勝ち」)
-3. 組み込みルール (優先度降順):
-   a. 特殊ケース (Nullable<T>, Task<T>/ValueTask<T> の unwrap, KeyValuePair<K,V> 等)
-   b. コレクション (List<T>/IList<T>/IEnumerable<T> → Array, Dictionary<K,V> → Record/Map)
-   c. 既知BCL型 (string, int系, bool, DateTime, Guid, decimal, ...)
-   d. enum (戦略は設定で数値/文字列リテラルUnionを選択、§2.5)
-   e. ユーザー定義型 (class/struct/record/interface) → IR内で解決済みのTS型参照
-   f. フォールバック (unknown + 警告ログ)
+```mermaid
+flowchart TD
+    Q["IrTypeを変換したい"] --> A["① ユーザー定義オーバーライド<br/>(tsgen.configで型のFQN指定)"]
+    A -->|マッチせず| B["② プラグイン登録ルール<br/>(登録順、最初にCanHandleしたもの勝ち)"]
+    B -->|マッチせず| C1["③a. 特殊ケース<br/>Nullable&lt;T&gt;, Task&lt;T&gt;/ValueTask&lt;T&gt;のunwrap,<br/>KeyValuePair&lt;K,V&gt;等"]
+    C1 -->|マッチせず| C2["③b. コレクション<br/>List/IList/IEnumerable→Array,<br/>Dictionary→Record/Map"]
+    C2 -->|マッチせず| C3["③c. 既知BCL型<br/>string, int系, bool, DateTime,<br/>Guid, decimal, ..."]
+    C3 -->|マッチせず| C4["③d. enum<br/>(数値 or 文字列リテラルUnion, §2.5)"]
+    C4 -->|マッチせず| C5["③e. ユーザー定義型<br/>class/struct/record/interface"]
+    C5 -->|マッチせず| C6["③f. フォールバック<br/>(unknown + 警告ログ)"]
+
+    A -->|マッチ| R["TsTypeExpression確定"]
+    B -->|マッチ| R
+    C1 -->|マッチ| R
+    C2 -->|マッチ| R
+    C3 -->|マッチ| R
+    C4 -->|マッチ| R
+    C5 -->|マッチ| R
+    C6 --> R
 ```
 
 ### 2.3 拡張可能にする理由と設計
@@ -239,23 +216,16 @@ TypeScript の `interface`/`type` 宣言自体は相互参照可能 (プロパ�
 辺とする有向グラフに対し、**Tarjan の強連結成分分解 (SCC)** を IR構築の後処理
 (Stage 2 の最終工程) として1回実行する。
 
-```
-入力: IrAssembly.Types (すべての IrType)
-出力: 各 IrType に対する
-      - SccId: 同じ強連結成分に属する型は同じ ID を持つ
-      - IsCyclic: Boolean (SccのサイズがOR、自己参照ありなら true)
-      - TopologicalOrder: Int (SCCを1頂点とみなしたDAGでのトポロジカル順位)
-
-手順:
-  1. 各 IrType の直接依存を収集する (辺の定義):
-     - プロパティ/フィールドの型 (ジェネリクス引数含む)
-     - 基底クラス / 実装インターフェース
-     - (ネストして参照されるユーザー定義型のみ。BCL型は辺を張らない)
-  2. Tarjan法 (O(V+E)) でSCCを求める。
-  3. SCCごとに:
-     - サイズ1かつ自己ループなし → IsCyclic = false
-     - それ以外 → IsCyclic = true
-  4. SCCをまとめて1頂点としたDAG上でトポロジカルソートし、出力順を確定する。
+```mermaid
+flowchart TD
+    In["入力: IrAssembly.Types<br/>(すべてのIrType)"] --> Edges["① 各IrTypeの直接依存(辺)を収集<br/>・プロパティ/フィールドの型(ジェネリクス引数含む)<br/>・基底クラス/実装インターフェース<br/>・ユーザー定義型のみ(BCL型は辺を張らない)"]
+    Edges --> Tarjan["② Tarjan法 O(V+E) でSCCを求める"]
+    Tarjan --> Check{"③ SCCのサイズが1かつ<br/>自己ループなし?"}
+    Check -->|Yes| NotCyclic["IsCyclic = false"]
+    Check -->|No| Cyclic["IsCyclic = true"]
+    NotCyclic --> Topo["④ SCCを1頂点とみなしたDAG上で<br/>トポロジカルソートし出力順を確定"]
+    Cyclic --> Topo
+    Topo --> Out["出力: 各IrTypeの<br/>SccId / IsCyclic / TopologicalOrder"]
 ```
 
 ### 3.3 検出結果の使い道 (Emitter側の分岐)
@@ -540,14 +510,15 @@ type
 
 ### 7.2 各ステージのデータフロー
 
-```
-RawAssemblyModel (Stage1, ほぼ生の反射情報)
-   → IrAssembly (Stage2, 安定モデル。以降のステージはこれ以外を参照しない)
-   → (Stage3) TypeMappingResolver がIrTypeRefをキャッシュ付きで解決
-   → (Stage4) 各Emitterが IrAssembly + TypeMappingResolver を読み、
-     出力用の軽量AST (TsSourceFile { Path, Imports, Declarations }) を構築
-   → (Stage5) TsSourceFile をシリアライズしてファイル書き込み、または
-     既存ファイルとのdiff計算 (--check モード)
+```mermaid
+flowchart LR
+    Raw["RawAssemblyModel<br/>(Stage1, ほぼ生の反射情報)"]
+    Ir["IrAssembly<br/>(Stage2, 安定モデル。以降は<br/>これ以外を参照しない)"]
+    Resolve["TypeMappingResolverで<br/>IrTypeRefをキャッシュ付きで解決<br/>(Stage3)"]
+    Ast["軽量AST: TsSourceFile<br/>{ Path, Imports, Declarations }<br/>(Stage4, 各Emitterが構築)"]
+    Write["ファイル書き込み<br/>または既存ファイルとのdiff計算<br/>(Stage5, --checkモード)"]
+
+    Raw --> Ir --> Resolve --> Ast --> Write
 ```
 
 **設計判断: Stage1のRawAssemblyModelとStage2のIrAssemblyをなぜ分けるか**
