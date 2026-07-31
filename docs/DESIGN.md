@@ -18,16 +18,44 @@ are organized in `HANDOFF.md`; read it alongside this document when starting Pha
 ### 0.1 Purpose
 
 A CLI tool that loads .NET assemblies (`*.dll`) via `System.Reflection` (or an
-equivalent), and generates TypeScript type definitions (`*.d.ts`) along with,
-optionally, runtime validation schemas (zod/io-ts) and API client functions. The
-generated output is intended to be usable from TypeScript projects on both Node.js
-and the browser.
+equivalent) and generates TypeScript type definitions. **Its primary use case, as
+of a scope pivot documented in `HANDOFF.md` §6, is generating TypeScript Props
+types for Inertia.js page components in ASP.NET Core + Inertia.js applications**:
+typing the `data` argument passed to `Inertia.Render(componentName, data)` as the
+Props type consumed by the corresponding frontend page component (e.g.
+`resources/js/Pages/PageName.tsx`), together with the "shared data" merged into
+every page and the field-level validation-error shape consumed by Inertia's
+`useForm()` client hook.
+
+This is a narrowing from the tool's original, more general framing ("any .NET
+assembly → any TypeScript output"). The underlying machinery — the type mapping
+layer, the IR, NRT analysis, cycle detection — stays fully general, and the tool
+continues to also work as a generic .NET → TypeScript type-definition generator
+(with optional runtime validation schemas via zod/io-ts, and API client fetch
+wrappers) for projects that are not using Inertia.js; see §0.2 for concrete use
+cases and §8 for how the Inertia-specific and generic modes now relate.
 
 ### 0.2 Intended Use Cases
 
-- Treat DTO/entity definitions in a .NET backend (ASP.NET Core, etc.) as the single
-  source of truth, and auto-generate frontend (TypeScript/React/Vue, etc.) types to
-  prevent drift.
+**Primary (Inertia.js):**
+
+- Auto-generate the Props type for an Inertia.js page component directly from the
+  ASP.NET Core controller action that renders it via
+  `Inertia.Render(componentName, data)`, instead of hand-maintaining a duplicate
+  shape on the frontend that can silently drift from the backend.
+- Merge each page's own Props with "shared data" injected on every page via the
+  Inertia middleware's `share()`-equivalent mechanism (current authenticated user,
+  flash messages, etc.) into a single, consistent Props type (§2.6, §8.2).
+- Generate the field-name → error-message shape consumed by Inertia's `useForm()`
+  client hook directly from .NET validation attributes (`[Required]`, etc.), so
+  frontend form-error handling stays in sync with backend validation rules without
+  hand-maintained duplication (§5.4).
+
+**Secondary (generic .NET → TypeScript, still supported, see §8.3):**
+
+- Treat DTO/entity definitions in a .NET backend as the single source of truth more
+  generally (for projects not using Inertia.js), and auto-generate frontend
+  (TypeScript/React/Vue, etc.) types to prevent drift.
 - Act as an alternative to, or complement for, projects that already generate
   OpenAPI, when more accurate type information (generics, nullability, enums, etc.)
   needs to be reflected in TypeScript.
@@ -39,11 +67,18 @@ and the browser.
 - This tool does not "transpile" .NET to TypeScript (i.e., it does not convert
   logic/executable code). The scope is strictly types, signatures, and metadata;
   method bodies are not generated (API functions are generated only as HTTP-call
-  wrappers — see §7 for details).
+  wrappers — see §8.3 for details).
 - Covering every feature of the .NET type system is not a goal (e.g., dynamic types
   expressible only through deep reflection, `dynamic`, reflection-only internal
   types, etc.). Unsupported types explicitly fall back to `unknown`/`any` with a
   warning (see §2.4 for details).
+- Full modeling of C# control flow or arbitrary expression evaluation is not a
+  goal. The entry-point-driven analysis introduced for the Inertia.js use case
+  (§3.5) only needs to locate `Inertia.Render(...)` call sites inside controller
+  action bodies and determine the static type of the `data` argument passed
+  there — it does not attempt to interpret arbitrary business logic. Whether even
+  this narrow amount of method-body analysis is feasible from an Oxygene-based CLI
+  is itself unverified and flagged as a new technical risk in §3.5.
 
 ---
 
@@ -61,9 +96,9 @@ flowchart TD
 
     subgraph S4["Stage 4: Emitters (separated per output format, can run in parallel)"]
         direction LR
-        S4DTS["DtsEmitter<br/>(generates .d.ts)"]
-        S4SCHEMA["SchemaEmitter<br/>(zod/io-ts etc.)"]
-        S4API["ApiClientEmitter<br/>(generates fetch wrapper functions)"]
+        S4DTS["DtsEmitter<br/>(.d.ts: types, plus Page Props /<br/>Shared Data / Form-error types, §2.6)"]
+        S4SCHEMA["SchemaEmitter<br/>(zod/io-ts; also backs Form-error<br/>shape validation, §5.4)"]
+        S4API["ApiClientEmitter<br/>(fetch wrappers; secondary/<br/>non-primary mode, see §8.3)"]
     end
 
     S5["Stage 5: Writer / Diff Engine<br/>Writes files, or in --check mode<br/>computes only the diff against existing output (for CI)<br/>Manages incremental generation cache"]
@@ -86,6 +121,14 @@ Supporting components (outside the pipeline above):
 - **Diagnostics**: Collects logs/warnings/errors shared across all stages (centrally
   aggregates fallback warnings for unsupported types, cycle-detection warnings,
   etc., and prints a summary when the CLI exits).
+
+**Note (post-pivot, see `HANDOFF.md` §6)**: the primary output for Inertia.js
+projects — Page Props / Shared Data / Form-error types — is still emitted by the
+existing `DtsEmitter` as ordinary `.d.ts` output. It does not require a new Stage 4
+component; what's new is additional IR inputs (§7.1) and new resolution logic
+ahead of Stage 3 (§2.6, §3.5). `ApiClientEmitter`'s fetch-wrapper generation, by
+contrast, is downgraded from a primary pipeline output to a secondary/optional
+mode (§8.3).
 
 ### 1.2 Design Rationale: Why a Five-Stage Pipeline with an IR
 
@@ -208,6 +251,42 @@ flowchart TD
     the TS type, the type loses its purpose, so serialization attributes are
     treated as the most trustworthy source of information whenever possible.
 
+### 2.6 Inertia-Specific Type-Generation Targets
+
+Following the pivot documented in `HANDOFF.md` §6, three additional
+type-generation targets sit on top of the type mapping layer described above. All
+three still resolve their leaf types through the same `ITypeMappingRule` chain
+(§2.2) — what's new is how the *set of members* that make up each target type is
+assembled, not how individual member types are mapped.
+
+1. **Page Props types** — for each controller action that calls
+   `Inertia.Render(componentName, data)`, the shape of `data` (typically an
+   anonymous type or a POCO constructed inline) becomes a generated
+   `interface`/`type` associated with `componentName` (exact naming/output-file
+   convention is TBD — see §7.4 and the open question in §11). This requires
+   discovering these call sites within method bodies (§3.5) — this part is new and
+   unverified.
+2. **Shared Data types** — data injected into every page via the Inertia
+   middleware's `share()`-equivalent (e.g. current authenticated user, flash
+   messages) must be merged with each page's own Props type. The design
+   represents this as a separate `IrSharedDataContract` (§7.1) that every
+   generated Page Props type structurally intersects with
+   (`type PageProps<T> = SharedData & T`), rather than duplicating the shared
+   fields into every page interface — this avoids drift if the shared payload
+   changes.
+3. **Form/`useForm()` error types** — Inertia's client-side `useForm()` hook
+   expects a field-name → error-message shape for validation errors. This reuses
+   the existing validation-attribute reflection from §5 (`[Required]`,
+   `[StringLength]`, etc.) that was already designed for zod/io-ts schema
+   generation (§5.3); the new piece is only the *shape* emitted (a
+   `Partial<Record<keyof FormValues, string>>`-style type) rather than a runtime
+   schema. See §5.4.
+
+None of this changes the `TsTypeExpression` shape (§2.1) or the priority-chain
+resolution mechanism (§2.2) — it only adds new *entry points* that decide which
+`IrType`s exist to be resolved in the first place, and how their members are
+grouped for emission.
+
 ---
 
 ## 3. Cycle Detection Algorithm
@@ -278,6 +357,62 @@ flowchart TD
   thousands of types. Actual measurements will be confirmed in Phase 2 (a
   benchmark task for large assemblies has been added to the task list — see
   HANDOFF.md).
+
+### 3.5 Entry-Point-Driven Type Discovery (Inertia Mode)
+
+**Problem statement**: §3.1–3.4 above assume the existing model — scan the whole
+assembly, build `IrAssembly.AllTypes` from everything, then find cycles among all
+of them. That premise no longer fits the Inertia.js use case well: a typical
+ASP.NET Core + Inertia.js controller assembly contains many types that are never
+passed to `Inertia.Render` (internal service DTOs, EF Core entities never exposed
+to a page, etc.), and generating Props/`.d.ts` types for all of them adds noise
+the frontend never needs.
+
+**Proposed approach**: rather than seeding `IrAssembly.AllTypes` from every type in
+the assembly, an entry-point-driven mode seeds it only from types *reachable from
+an `Inertia.Render` call site*:
+
+```mermaid
+flowchart TD
+    A["① Scan controller method bodies for<br/>Inertia.Render call sites"] --> B["② For each call site, resolve the<br/>static type of the 'data' argument"]
+    B --> C["③ Walk that type's members transitively,<br/>reusing the edge-collection logic of §3.2 step ①"]
+    C --> D["④ Union of reachable types becomes<br/>IrAssembly.AllTypes for this mode"]
+    D --> E["Stages 2-5 proceed unchanged from here<br/>(SCC/topo-sort, type mapping, emission)"]
+```
+
+This reuses the same graph-walking machinery already built for cycle detection
+(§3.2 step ①, edge collection) — the only new piece is steps ①/②: *finding the
+call sites and resolving the argument's static type in the first place*, which
+requires inspecting method bodies rather than just type/member signatures.
+
+**Why this is a new, unverified technical risk (do not treat as solved)**:
+everything else in this design document reads *type-level* .NET metadata
+(`System.Reflection`-style: types, members, attributes), which is comparatively
+well-trodden ground. Finding `Inertia.Render(...)` call sites and determining the
+static type of an expression passed as an argument requires either:
+
+- (a) IL-level analysis of method bodies — walking `call`/`callvirt`/`newobj`
+  opcodes and tracking the operand stack to reconstruct the argument's shape. This
+  is non-trivial, particularly for anonymous types, which the C# compiler lowers
+  to synthesized `<>f__AnonymousType0`-style classes with no source-level name; or
+- (b) a Roslyn-syntax-tree-level analysis instead of, or in addition to, this
+  tool's reflection-only design premise — which would be a significant
+  architectural addition, arguably in tension with the "metadata only, no source
+  parsing" framing in §0.1/§1.
+
+Neither approach has been prototyped. This is flagged as a top-priority technical
+validation item for whichever session picks up Phase 2 work on the Inertia pivot
+(see `HANDOFF.md` §6.3, and the corresponding open-question entry in §11).
+
+**Fallback if entry-point analysis proves infeasible**: the whole-assembly scan
+mode (§3.1–3.4, unchanged) remains available as a fallback — the user could
+instead be asked to explicitly mark which POCOs back an Inertia page (e.g. via a
+marker attribute, or an explicit config list of component-name → type-FQN pairs)
+rather than having the tool auto-discover them from call sites. This sacrifices
+the "automatic, no manual annotation" convenience that is the main draw of
+entry-point discovery, but keeps the rest of the pipeline (§2–§10) working
+unmodified. Which of the two (auto-discovery vs. explicit annotation) becomes the
+actual MVP path is left open pending the technical validation above.
 
 ---
 
@@ -439,6 +574,24 @@ type
   distinct Emitters in Stage 4 — users who only need `.d.ts` can disable
   SchemaEmitter and avoid the build cost.
 
+### 5.4 Validation Attributes → Inertia Form Error Shape
+
+The `useForm()`-oriented type target introduced in §2.6 (item 3) reuses the same
+`System.ComponentModel.DataAnnotations.*` reflection already designed for
+zod/io-ts schema generation in §5.3 — no new attribute-reading logic is required.
+What's new is only the shape emitted: instead of (or alongside) a
+runtime-validated zod schema, a plain TypeScript type of the form
+`Partial<Record<'field1' | 'field2' | ..., string>>` is generated (field names
+sourced from the same POCO/anonymous-type member discovery used for the
+corresponding Page Props type, §2.6 item 1), intended for use as the generic
+parameter of Inertia's client-side `useForm<TFormErrors>()`-equivalent hook.
+
+Because the concrete shape of this generic parameter is adapter- and
+frontend-framework-specific (§11 open questions on adapter/framework choice), the
+exact TypeScript signature this target should produce (a bare `Record<...>` type
+vs. something more specific to a chosen Inertia React/Vue/Svelte adapter's
+typings) is left open until those choices are made.
+
 ---
 
 ## 6. Plugin Mechanism Interface Design
@@ -556,6 +709,27 @@ type
     WellKnownKind: WellKnownTypeKind; // Used instead for known BCL types like string/int/List<T>
     TypeArguments: List<IrTypeRef>;
   end;
+
+  // --- Inertia-specific IR additions (§2.6); populated only when the
+  // entry-point-driven analysis mode (§3.5) is in use ---
+
+  IrPageComponent = public class
+  public
+    ComponentName: String;           // e.g. "Users/Show" (path relative to resources/js/Pages; exact convention TBD, §7.4)
+    PropsType: IrTypeRef;            // Type of the `data` argument passed to Inertia.Render
+    SourceControllerAction: String;  // FQN of the controller method, for diagnostics/traceability
+  end;
+
+  IrSharedDataContract = public class
+  public
+    Members: List<IrMember>;         // e.g. auth user, flash messages; merged into every IrPageComponent's Props (§2.6 item 2)
+  end;
+
+  IrFormErrorShape = public class
+  public
+    SourceType: IrTypeRef;           // The POCO/anonymous type validation attributes were read from
+    FieldNames: List<String>;        // Field names becoming the Record<...> key union (§5.4)
+  end;
 ```
 
 ### 7.2 Data Flow Across Stages
@@ -597,11 +771,69 @@ form of .NET metadata into what IrAssembly requires."
   which is resolved at the top of the §2.2 priority chain (user-defined
   override).
 
+### 7.4 Output Layout for Inertia-Specific Targets (Open)
+
+Where generated Page Props / Shared Data / Form-error types (§2.6) should live
+relative to the frontend project — a single `resources/js/types/inertia.d.ts`, or
+one file per page mirroring `resources/js/Pages/**` (analogous to the
+`namespaceStrategy` choices in §7.3 above) — has not been decided, since it
+depends on the still-open frontend-framework choice (§11): a React-oriented
+layout naturally pairs one generated `.d.ts` per page component, whereas a Vue
+`defineProps<...>()`-oriented layout may prefer inlining the type directly at the
+point of use rather than as an ambient global declaration. This is left as an
+explicit open question (§11) rather than prescribed here.
+
 ---
 
-## 8. API Integration Design
+## 8. Server ↔ Frontend Data Integration Design
 
-### 8.1 Integration with OpenAPI Spec Generation
+### 8.1 Decision: Inertia.js Integration Is Primary; Generic REST/OpenAPI Integration Is Folded to Secondary
+
+Following the pivot in `HANDOFF.md` §6, this section's original design (an
+OpenAPI-spec integration mode plus per-endpoint fetch-wrapper generation) is no
+longer the tool's primary use case. Three options were considered for what to do
+with that original content:
+
+| Option | Description | Assessment |
+|---|---|---|
+| A. Drop the OpenAPI/fetch-wrapper design entirely | Remove it outright, treat it as out of scope going forward | Rejected: real Inertia.js applications frequently still expose a handful of plain JSON API endpoints alongside Inertia-rendered pages (e.g. an autocomplete/search endpoint hit from client-side JS without a full page visit); dropping this design would lose a genuinely useful, already-designed capability for no benefit |
+| B. Keep it as a fully parallel, equally-primary mode alongside Inertia integration | Maintain both designs at equal weight and equal implementation priority | Rejected: this is exactly the "maintaining two parallel modes" outcome the pivot is trying to avoid for MVP simplicity (`HANDOFF.md` §6.4); most target projects will be predominantly Inertia-shaped, so treating the REST/OpenAPI path as equally primary overstates its expected actual usage |
+| **C. Fold it in as a secondary, lower-priority mode (chosen)** | Keep the existing OpenAPI-integration and fetch-wrapper design (preserved below in §8.3) available and functional, but explicitly de-prioritized relative to §8.2's Inertia-specific integration, in both documentation emphasis and MVP/implementation order (§10) | **Adopted.** This matches `HANDOFF.md` §6.4's lean ("当面Inertia向けに一本化する方がMVPとしてはシンプル" — "unifying around Inertia for now is simpler as an MVP") while not discarding a design that remains genuinely useful for the "handful of plain JSON endpoints alongside Inertia pages" case above |
+
+**Judgment call (flag for review)**: this fold-in decision follows
+`HANDOFF.md` §6.4's explicit lean, since the rejected alternative (maintaining two
+fully parallel, equally-weighted designs) was flagged there as the very thing to
+avoid for MVP simplicity. It does not itself decide the adapter or frontend
+framework questions, which remain open (§11) — those decisions are independent of
+whether §8.3 is primary or secondary.
+
+### 8.2 Inertia.js Page Props & Shared Data Integration (Primary)
+
+- **Page Props** (§2.6 item 1, `IrPageComponent`, §7.1): generated from the
+  entry-point-driven discovery of `Inertia.Render(componentName, data)` call
+  sites (§3.5). Output is a componentName → Props-type association, emitted via
+  `DtsEmitter` as ordinary `.d.ts` `interface`/`type` declarations (no new Stage 4
+  component is needed — see the note in §1.1).
+- **Shared Data** (§2.6 item 2, `IrSharedDataContract`, §7.1): discovered from the
+  ASP.NET Core Inertia middleware's `share()`-equivalent registration. *How* to
+  reliably locate this registration in a target assembly/codebase (it's typically
+  a call made in `Startup`/`Program` configuration code, not a type or attribute)
+  is itself unresolved and depends on which adapter is chosen (§11) — some
+  adapters may expose shared-data registration in a more reflectable form (e.g. a
+  class implementing a well-known interface) than others, which is one more
+  reason the adapter choice (§11) needs to be made before this can be fully
+  designed.
+- Both are merged per §2.6 item 2's `SharedData & PageProps` intersection-type
+  strategy.
+- Form/`useForm()` error types are covered separately in §5.4 (they reuse the
+  existing validation-attribute reflection of §5, not new discovery logic).
+
+### 8.3 Generic REST/OpenAPI Integration (Secondary, De-Prioritized)
+
+This subsection preserves the pre-pivot design in full, now scoped as an
+optional, secondary mode rather than the tool's primary output (§8.1 above).
+
+#### 8.3.1 Integration with OpenAPI Spec Generation
 
 - This tool does not generate the OpenAPI spec itself (that responsibility is
   left to the existing ecosystem — `Microsoft.AspNetCore.OpenApi` / Swashbuckle,
@@ -623,7 +855,7 @@ form of .NET metadata into what IrAssembly requires."
   some accommodation on the Swashbuckle configuration side — this needs Phase 2
   investigation), and uses that association to swap in the types.
 
-### 8.2 Per-Endpoint TypeScript Function (fetch Wrapper) Generation
+#### 8.3.2 Per-Endpoint TypeScript Function (fetch Wrapper) Generation
 
 ```typescript
 // Illustrative output (example ApiClientEmitter output)
@@ -735,11 +967,24 @@ As agreed at requirements-definition time, the following is the minimum bar:
 6. Record/tuple support
 7. Validation attributes → zod/io-ts schema generation (§5.3)
 8. Plugin mechanism (§6) — starting from declarative rules (Approach B)
-9. OpenAPI integration / API client generation (§8) — later, given its broad
-   dependency surface
+9. Generic REST/OpenAPI integration / API client generation (§8.3) — later,
+   given its broad dependency surface, and now explicitly secondary to the
+   Inertia-specific targets below (§8.1)
 10. Incremental generation / watch mode / CI diff check (§9) — tackled as a
     developer-experience improvement once the CLI's core functionality has
     stabilized
+
+**Note (post-pivot, not yet reordered — see `HANDOFF.md` §6)**: this priority
+list predates the Inertia.js pivot and has not yet been reworked to place the new
+Inertia-specific targets (Page Props / Shared Data / Form-error types, §2.6) and
+the entry-point-driven analysis mode (§3.5) within it. Given that the NRT
+verification risk (§4.1, item 1 in §11) was already the top Phase 2 blocker
+before the pivot, and the entry-point-analysis risk (§3.5, item 8 in §11) is now
+a second, comparably significant unknown, a future session should decide whether
+entry-point analysis needs its own early spike (analogous to the NRT spike)
+before committing to it as part of the MVP path, or whether the MVP should ship
+with the "explicit annotation" fallback described in §3.5 first. This document
+does not decide that ordering here — it is left as an open question (§11).
 
 ### 10.3 Rationale for the Boundary
 
@@ -751,6 +996,10 @@ As agreed at requirements-definition time, the following is the minimum bar:
   plugin mechanism is deliberately placed toward the end, since finalizing its
   design is less wasteful once a reasonable number of concrete "what do we
   actually want to extend" examples have accumulated.
+- This rationale was written before the Inertia.js pivot (`HANDOFF.md` §6) and
+  still holds for the generic .NET → TypeScript path. It has not yet been
+  extended to explain where the new Inertia-specific targets should sit in the
+  priority order — see the note at the end of §10.2 above.
 
 ---
 
@@ -777,6 +1026,23 @@ Items to resolve before Phase 2 begins, or immediately after. Also documented in
    distribution as a dotnet tool; this comparison has not yet been started.
 5. **Technical feasibility of dynamic assembly loading for plugins (§6.3,
    Approach A)** (whether a dynamic-loading API exists on Echoes).
+6. **Which ASP.NET Core Inertia adapter to target** — `InertiaNetCore` /
+   `InertiaCore` / `inertia-dotnet` / others — multiple community forks exist with
+   no clear single standard; not yet compared or decided (`HANDOFF.md` §6.3/§6.4).
+   Affects how `Inertia.Render`'s call sites are detected (§3.5) and how Shared
+   Data registration is discoverable (§8.2). **Do not assume any specific choice
+   has been made** — this document intentionally does not pick one.
+7. **Which frontend framework to assume** — React / Vue / Svelte — for the shape
+   of generated Props types (`interface Props { ... }` vs. a Vue
+   `defineProps<...>()`-oriented type, etc.). Not yet decided; affects §2.6, §7.4,
+   and the generic-parameter shape in §5.4. **Do not assume any specific choice
+   has been made** here either.
+8. **Technical feasibility of entry-point-driven type discovery** (§3.5) —
+   whether `Inertia.Render` call sites and their argument types can be resolved
+   via IL-level method-body analysis, or would require Roslyn-syntax-tree-level
+   analysis outside this tool's reflection-only design premise. Unprototyped;
+   flagged as the newest and least-understood technical risk introduced by the
+   pivot, alongside the pre-existing NRT-attribute risk (item 1 above).
 
 ---
 
@@ -794,3 +1060,9 @@ Items to resolve before Phase 2 begins, or immediately after. Also documented in
   RemObjects Elements ships on a weekly release cycle, it's recommended to
   re-check for any differences against the latest documentation when Phase 2
   begins.
+- **No web research has yet been performed on ASP.NET Core Inertia.js adapters**
+  (`InertiaNetCore`/`InertiaCore`/`inertia-dotnet`/etc.), their relative maturity,
+  or the frontend-framework question. This is intentional — it is called out as
+  open questions §11 items 6–7 rather than researched and pre-decided here, to
+  avoid this document prematurely committing to a specific library or framework
+  choice ahead of the next session's/user's decision (`HANDOFF.md` §6.4).
