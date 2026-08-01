@@ -1,0 +1,12 @@
+[
+  {
+    "name": "default",
+    "args": ["--enum-style", "numeric", "--nrt-unknown-policy", "nullable"],
+    "expected": "expected/default.d.ts"
+  },
+  {
+    "name": "union-nonnull",
+    "args": ["--enum-style", "union", "--nrt-unknown-policy", "non-null"],
+    "expected": "expected/union-nonnull.d.ts"
+  }
+]

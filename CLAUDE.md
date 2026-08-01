@@ -15,8 +15,23 @@ Phase 1 (design) is complete. Phase 2 (implementation) has a working MVP:
 Tokenizer-based NRT source scanner, a lightweight Stage 2 IR, and a
 single-file Stage 4 `DtsEmitter` — see `HANDOFF.md` §12 for what was
 built, how, and its known limitations. Still missing: cycle detection,
-generics, the pluggable type-mapping/plugin chain, split-file output, and
-automated tests (`docs/DESIGN.md` §10.2 has the post-MVP order).
+generics, the pluggable type-mapping/plugin chain, and split-file output
+(`docs/DESIGN.md` §10.2 has the post-MVP order).
+
+**Automated snapshot tests exist now:** run `tools/run-tests.ps1` (builds
+the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
+output against committed `expected/*.d.ts` snapshots per fixture's
+`cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
+an intentional output change. See `HANDOFF.md` §15. Only one fixture
+(`SampleModel`) exists so far — it does not cover nested types, multiple
+types per `type` section, or indexer-style property parameter lists (see
+`HANDOFF.md` §12.6's scanner limitations).
+
+**`metadata.fx` does not carry NRT info** — confirmed hands-on
+(`HANDOFF.md` §14), closing the lead from §9.4. The Tokenizer-based
+source scan (`src/Tsgen/Nrt/NullabilityScanner.pas`) remains the only
+viable path to nullable/not-nullable info for Oxygene-authored code; no
+design change resulted from this check.
 
 **Building requires a workaround, not just `EBuild.exe`:** run
 `tools/dev-build.ps1` (not `EBuild.exe` directly) — EBuild has a known gap

@@ -1089,3 +1089,191 @@ order the review suggested):
    plausibly obtainable; every session this stays unreported extends how
    entrenched `tools/dev-build.ps1`'s workaround becomes. Send the report
    before the next implementation session, not after.
+
+---
+
+## 14. §9.4 follow-up resolved: `metadata.fx` does not carry NRT info (Windows hands-on, 2026-08-02)
+
+**Conclusion (§13 deferred item 1 / §9.4 resolved): the `metadata.fx`
+manifest resource is real, but it does not expose nullable/not-nullable
+information.** §8.3's conclusion stands unchanged: the Tokenizer-based
+source scan remains the only practically viable `INullabilityProvider`
+implementation. This does not change any code — it closes an open
+question and removes a reason to hold off on further scanner work
+(§13 deferred item 3).
+
+### 14.1 Verification method
+
+1. Installed the .NET 10 SDK on this machine mid-session (previously only
+   the runtime was present, which blocked `dotnet new`/`dotnet build`).
+2. Wrote a disposable console app (not part of `src/Tsgen`, built and run
+   from the session scratchpad only, never committed) using the standard,
+   documented `System.Reflection.PortableExecutable.PEReader` +
+   `System.Reflection.Metadata.MetadataReader` APIs to enumerate
+   `ManifestResource` entries in `tests/fixtures/SampleModel/Bin/Release/SampleModel.dll`
+   and `src/Tsgen/Bin/Release/tsgen.dll`.
+3. Confirmed both assemblies embed exactly one manifest resource named
+   **`metadata.fx`** (`Implementation` nil, i.e. stored in the assembly's
+   own COR20 resources blob) — matching the RemObjects contact's hedge in
+   §9.4 almost exactly. Magic bytes `ROSF` at the start of the resource
+   (likely "RemObjects Software Format").
+4. Dumped the resource body and manually inspected it: a crude
+   printable-string scan plus targeted hex dumps around the known property
+   names of `SampleModel.User` (`Id`, `DisplayName`, `Age`, `IsAdmin`,
+   `FirstName`, `LastName`).
+
+### 14.2 What's actually in `metadata.fx`
+
+- A large flat list of reference-assembly names (`Echoes`, `mscorlib`,
+  `netstandard`, `System.Collections.Concurrent`, ... — reads like the
+  full .NET reference-assembly/facade list, not specific to this project).
+- A compact per-member symbol index: for each property/field, a record
+  containing the bare name, a member-kind tag (properties and fields tag
+  differently), and an XML-doc-ID-style signature string (`P:Id`,
+  `F:FirstName`, and for methods `M:get_Id-System.String`,
+  `M:set_DisplayName-System.String`, etc.). Reads like the backing index
+  for the IDE's completion/"find symbol" feature that §7 speculated about
+  — a name/kind/signature lookup table, not a full semantic model.
+- A small, deduplicated table of canonical type-name strings
+  (`System.String`, `System.Int32`, `System.Boolean` — each appears
+  exactly once) referenced by the per-member records above.
+
+### 14.3 Why this rules out NRT recovery from `metadata.fx`
+
+Compared byte-for-byte the records for `Id` (`not nullable String`)
+against `DisplayName`/`Age`/`IsAdmin` (`nullable` / unannotated String,
+Int32, Boolean respectively) — same source file
+(`tests/fixtures/SampleModel/SampleModel.pas`) used for the original §8
+hands-on verification, so the ground truth for each member's declared
+nullability is already known independently:
+
+- Every property record has an **identical byte structure** regardless of
+  declared nullability (same tag sequence, only the name string, its
+  length, and small sequential index values differ — none of which track
+  nullability).
+- The canonical type-name table has exactly **one** entry for
+  `System.String`, shared by both `Id` (not nullable) and `DisplayName`
+  (nullable) — if nullability were encoded as a distinct referenced type
+  (e.g. a wrapper type name), there would need to be at least two
+  different `String`-related entries. There is only one.
+- The two per-usage-site references into that shared `System.String`
+  entry (one for `Id`'s get/set, one for `DisplayName`'s get/set) are
+  **byte-for-byte identical** to each other, despite one member being
+  `not nullable` and the other `nullable`.
+
+This isn't a full reverse-engineering of the `ROSF` binary protocol (that
+would be a much larger, lower-value undertaking, and was explicitly out
+of scope for this "cheap first step" per §9.4) — but it's a direct,
+ground-truth-anchored comparison on the exact property that matters here,
+and it comes back negative on all three counts. Good enough to close the
+question without further investment.
+
+### 14.4 Impact on the design / task list
+
+- `HANDOFF.md` §9.4's "possible NRT info outside standard reflection"
+  lead is resolved: **no**, not in the default `metadata.fx` resource.
+  `docs/DESIGN.md` §4 does not need revisiting again — the
+  Tokenizer-based-scan conclusion it already documents (from §8.3) is
+  correct as-is.
+- §13 deferred item 3 (reworking `NullabilityScanner` off
+  `SimpleTokenizer` onto the real incremental
+  `RemObjects.Elements.Code.Oxygene.Tokenizer`/`TokenStream`) can now
+  proceed without this open question hanging over it.
+- Side finding, not acted on: this machine only had the .NET runtime
+  installed, not the SDK, for everything up through §13 — `dotnet
+  build`/`dotnet new`/`dotnet run` were unavailable, only pre-built
+  apphosts (like `tsgen.exe` via `EBuild.exe`) could run. The SDK was
+  installed mid-session on 2026-08-02 specifically to unblock this
+  investigation. Not expected to affect `tools/dev-build.ps1` (still
+  EBuild-driven), but worth knowing the SDK is now present if a future
+  session wants to reach for plain `dotnet` tooling directly.
+
+---
+
+## 15. §4 item 4 done: snapshot-test infrastructure (Windows hands-on, 2026-08-02)
+
+**§13 deferred item 2 is done.** `tools/run-tests.ps1` builds the CLI and
+every fixture under `tests/fixtures/`, runs `tsgen` once per case declared
+in that fixture's `cases.json`, and diffs the result against a committed
+`expected/*.d.ts` snapshot. This was deliberately done *before* §13
+deferred item 3 (reworking the NRT scanner's tokenizer loop), per the
+review's original ordering advice, now that §14 has removed the reason to
+hold off further.
+
+### 15.1 Layout
+
+```
+tests/fixtures/SampleModel/
+  SampleModel.pas / .elements   -- unchanged
+  cases.json                     -- new: list of {name, args, expected}
+  expected/
+    default.d.ts                 -- CLI defaults (numeric enum, nullable-unknown)
+    union-nonnull.d.ts           -- --enum-style union --nrt-unknown-policy non-null
+tools/run-tests.ps1              -- new: the runner (see below)
+```
+
+`cases.json` is what makes the runner fixture-agnostic — adding a new
+fixture later means adding its `.pas`/`.elements` plus a `cases.json`,
+not touching `run-tests.ps1`. A fixture with no `cases.json` (or no
+`.elements` file) is skipped with a warning rather than failing the run,
+so partially-set-up fixtures don't block the rest of the suite.
+
+The old, previously-committed `tests/fixtures/SampleModel/dist/index.d.ts`
+(from §12.5's manual verification) was removed — it was byte-for-byte
+identical to the new `expected/default.d.ts` and is now superseded by the
+`expected/` convention.
+
+### 15.2 What the runner does
+
+1. Builds `tsgen.exe` via the existing `tools/dev-build.ps1` (so the
+   `deps.json` workaround from §10.2/§12.3 stays in exactly one place).
+2. For each fixture directory with both a `.elements` file and a
+   `cases.json`: builds the fixture with a plain `EBuild.exe
+   /Configuration:Release` call. **No `deps.json` patch needed for
+   fixtures** — unlike `tsgen.exe`, fixture DLLs are never executed, only
+   loaded as metadata by `tsgen` via `MetadataLoadContext` (§10), so the
+   runtime-asset gap that forces the workaround for `tsgen.exe` itself
+   doesn't apply here.
+3. For each case, runs `tsgen generate --assembly <fixture.dll> --source
+   <fixtureDir> --out tests/fixtures/<Fixture>/_actual/<case.name>` with
+   that case's `args`, then compares `index.d.ts` against
+   `expected/<...>` (both sides newline-normalized before comparing, so a
+   future CRLF/LF discrepancy from git config or an editor doesn't cause
+   a false failure).
+4. `-UpdateSnapshots` switch: regenerates every `expected/*.d.ts` from
+   current output instead of comparing — the normal snapshot-test
+   workflow for an intentional output change (verify the diff looks
+   right with plain `git diff` afterward, same as any other snapshot
+   testing setup).
+5. Prints a `[PASS]`/`[FAIL]` line per case (with a line-level diff via
+   `Compare-Object` on failure) and a summary count; exits non-zero if
+   anything failed. `_actual/` is deleted after each fixture's cases run
+   (added to `.gitignore`), so a full run leaves the tree clean whether
+   it passed or not.
+
+### 15.3 Verification
+
+- Fresh run: both cases (`default`, `union-nonnull`) pass.
+- Deliberately corrupted `expected/default.d.ts` (`Active = 0` →
+  `Active = 99`) to confirm the failure path: the runner reported
+  `[FAIL]` with a correct line-level diff (`expected: Active = 99,` /
+  `actual: Active = 0,`) and exited with code 1; the other case still
+  correctly reported `[PASS]`. Restored the snapshot and reran clean.
+- `-UpdateSnapshots` run against already-matching output produced no
+  content diff (confirmed via `git status`), i.e. it's idempotent when
+  nothing actually changed.
+
+### 15.4 Impact on the design / task list
+
+- The precondition §13 set for "the next structural change" (deferred
+  item 2, done here) is now satisfied. §13 deferred item 3 (reworking
+  `NullabilityScanner` off `SimpleTokenizer`) — the next candidate
+  structural change — can proceed with a regression safety net in place.
+- Only one fixture (`SampleModel`) exists so far, covering enums,
+  explicit `nullable`/`not nullable`, and the `Unknown`-policy fallback.
+  It does **not** cover nested types, multiple types under one `type`
+  section, or indexer-style property parameter lists — the known
+  scanner limitations already called out in §12.6. Adding fixtures that
+  exercise those cases would make good companion work for §13 deferred
+  item 3, since a scanner rework is exactly where those limitations are
+  either fixed or newly regression-locked.

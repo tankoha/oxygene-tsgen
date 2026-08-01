@@ -1003,3 +1003,200 @@ declare namespace SampleModel {
    修正してもらえる見込みは十分ある。報告しないまま経過するセッション
    が増えるほど、`tools/dev-build.ps1`の回避策が定着してしまう。次の
    実装セッションの前に報告を送ること、後回しにしないこと。
+
+---
+
+## 14. §9.4フォローアップ解決: `metadata.fx`にNRT情報は含まれない(Windows実機検証、2026-08-02)
+
+**結論(§13あえてやらなかったこと項目1 / §9.4を解決): `metadata.fx`
+マニフェストリソースは実在するが、nullable/not nullable情報は
+含んでいない。** §8.3の結論は変わらない: TokenizerベースのソースAPI
+スキャンが、実用上唯一の`INullabilityProvider`実装であり続ける。
+コードの変更は伴わないが、未解決の疑問を1つ閉じ、スキャナのさらなる
+作業(§13あえてやらなかったこと項目3)を保留する理由を取り除いた。
+
+### 14.1 検証方法
+
+1. このセッション途中で.NET 10 SDKをこのマシンにインストールした
+   (それまではランタイムのみが入っており、`dotnet new`/`dotnet build`
+   がブロックされていた)。
+2. `src/Tsgen`には属さない使い捨てのコンソールアプリを書いた(セッションの
+   scratchpadでのみビルド・実行し、コミットは一切していない)。標準の
+   ドキュメント化されたAPIである`System.Reflection.PortableExecutable.
+   PEReader` + `System.Reflection.Metadata.MetadataReader`を使い、
+   `tests/fixtures/SampleModel/Bin/Release/SampleModel.dll`と
+   `src/Tsgen/Bin/Release/tsgen.dll`の`ManifestResource`エントリを
+   列挙した。
+3. 両アセンブリとも、**`metadata.fx`**という名前のマニフェストリソースを
+   ちょうど1つ埋め込んでいることを確認した(`Implementation`はnil、
+   つまりアセンブリ自身のCOR20リソースBlobに格納されている) — §9.4の
+   RemObjects担当者の("probably"付きの)発言とほぼ一致する。リソース
+   先頭には`ROSF`というマジックバイト(おそらく「RemObjects Software
+   Format」)があった。
+4. リソース本体をダンプし、手動で調査した: 印字可能文字列の粗い
+   スキャンと、`SampleModel.User`の既知のプロパティ名(`Id`、
+   `DisplayName`、`Age`、`IsAdmin`、`FirstName`、`LastName`)周辺を
+   狙ったヘックスダンプを行った。
+
+### 14.2 `metadata.fx`の実際の中身
+
+- 参照アセンブリ名の大きなフラットリスト(`Echoes`、`mscorlib`、
+  `netstandard`、`System.Collections.Concurrent`など — このプロジェクト
+  固有ではなく、.NETの参照アセンブリ/facade一覧そのものに見える)。
+- メンバーごとのコンパクトなシンボル索引: プロパティ/フィールドごとに、
+  素の名前、メンバー種別タグ(プロパティとフィールドでタグが異なる)、
+  XMLドキュメントID風のシグネチャ文字列(`P:Id`、`F:FirstName`、
+  メソッドについては`M:get_Id-System.String`、
+  `M:set_DisplayName-System.String`等)を含むレコード。§7が推測していた
+  IDEの補完/「シンボル検索」機能を支える索引のように見える —
+  名前/種別/シグネチャの検索テーブルであって、完全な意味モデルではない。
+- 上記のメンバーレコードから参照される、正規化された型名文字列の小さな
+  重複排除テーブル(`System.String`、`System.Int32`、`System.Boolean` —
+  それぞれちょうど1回だけ出現)。
+
+### 14.3 `metadata.fx`からNRTを復元できないと言える理由
+
+`Id`(`not nullable String`)のレコードと、`DisplayName`/`Age`/`IsAdmin`
+(それぞれ`nullable`/未注釈のString、Int32、Boolean)のレコードを
+バイト単位で比較した — 元の§8実機検証と同じソースファイル
+(`tests/fixtures/SampleModel/SampleModel.pas`)を使っているため、各
+メンバーの宣言上のnullabilityという正解はすでに独立に分かっている:
+
+- 宣言されたnullabilityに関わらず、すべてのプロパティレコードは
+  **完全に同一のバイト構造**を持つ(タグの並びは同じで、名前文字列・
+  その長さ・小さな連番インデックス値だけが異なり、いずれも
+  nullabilityとは無関係)。
+- 正規化された型名テーブルには`System.String`のエントリが
+  **1つだけ**存在し、`Id`(not nullable)と`DisplayName`(nullable)の
+  両方から共有されている — もしnullabilityが別の参照型(例えば
+  ラッパー型名)として符号化されているなら、少なくとも2種類の
+  String関連エントリが必要になるはずだが、実際には1つしかない。
+- その共有された`System.String`エントリへの2つの使用箇所参照
+  (1つは`Id`のget/set用、もう1つは`DisplayName`のget/set用)は、
+  一方が`not nullable`でもう一方が`nullable`であるにもかかわらず、
+  **バイト単位で完全に同一**だった。
+
+これは`ROSF`バイナリプロトコルの全面的なリバースエンジニアリングでは
+ない(それははるかに大規模で、価値の低い作業になる可能性が高く、
+§9.4が求めていた「安価な最初の一手」の範囲を明確に超える) — しかし
+今回の論点にとって直接、正解データに基づいた比較であり、3つの観点
+すべてで否定的な結果が得られた。これ以上投資せずに疑問を閉じるには
+十分である。
+
+### 14.4 設計/タスクリストへの影響
+
+- `HANDOFF.md` §9.4の「標準reflection以外の場所にNRT情報がある
+  可能性」という手がかりは解決した: **ない**、少なくとも標準の
+  `metadata.fx`リソースの中には。`docs/DESIGN.md` §4を再度見直す
+  必要はない — §8.3からすでに文書化されているTokenizerベーススキャン
+  という結論はそのまま正しい。
+- §13あえてやらなかったこと項目3(`NullabilityScanner`を
+  `SimpleTokenizer`から、本来の逐次型
+  `RemObjects.Elements.Code.Oxygene.Tokenizer`/`TokenStream`へ
+  書き直すこと)は、この未解決の疑問に足を引っ張られることなく
+  進められるようになった。
+- 副次的な発見(今回は対応せず): §13までの間、このマシンには.NET
+  ランタイムのみが入っており、SDKは入っていなかった — `dotnet
+  build`/`dotnet new`/`dotnet run`は使えず、`EBuild.exe`経由の
+  ビルド済みapphost(`tsgen.exe`など)を実行することしかできなかった。
+  この調査を進めるために、2026-08-02のセッション途中でSDKを
+  インストールした。`tools/dev-build.ps1`(引き続きEBuild主導)への
+  影響はないはずだが、今後のセッションで素の`dotnet`ツールチェーンに
+  直接手を伸ばしたくなった場合、SDKが既に入っていることは覚えておく
+  価値がある。
+
+---
+
+## 15. §4項目4完了: スナップショットテスト基盤 (Windows実機検証、2026-08-02)
+
+**§13あえてやらなかったこと項目2が完了した。** `tools/run-tests.ps1`は
+CLIと`tests/fixtures/`配下の全フィクスチャをビルドし、各フィクスチャの
+`cases.json`で宣言されたケースごとに`tsgen`を1回実行し、結果を
+コミット済みの`expected/*.d.ts`スナップショットと比較する。これは
+レビューの当初の順序に従い、§13あえてやらなかったこと項目3(NRT
+スキャナのトークナイズループの作り直し)より**先に**あえて行った —
+§14がその作業を保留する理由をすでに取り除いていたためである。
+
+### 15.1 構成
+
+```
+tests/fixtures/SampleModel/
+  SampleModel.pas / .elements   -- 変更なし
+  cases.json                     -- 新規: {name, args, expected}のリスト
+  expected/
+    default.d.ts                 -- CLIデフォルト(数値enum、nullable-unknown)
+    union-nonnull.d.ts           -- --enum-style union --nrt-unknown-policy non-null
+tools/run-tests.ps1              -- 新規: ランナー本体(詳細は下記)
+```
+
+`cases.json`があることで、ランナーはフィクスチャに依存しない汎用的な
+作りになっている — 今後新しいフィクスチャを追加する際は、`.pas`/
+`.elements`と`cases.json`を追加するだけでよく、`run-tests.ps1`自体は
+変更不要。`cases.json`(または`.elements`ファイル)がないフィクスチャは、
+テスト一式全体を失敗させるのではなく、警告付きでスキップされる —
+セットアップ途中のフィクスチャが他のテストをブロックしないように
+するため。
+
+以前からコミットされていた`tests/fixtures/SampleModel/dist/index.d.ts`
+(§12.5の手動検証由来)は削除した — 新しい`expected/default.d.ts`と
+バイト単位で完全に同一だったため、`expected/`という規約に一本化して
+置き換えた形になる。
+
+### 15.2 ランナーの動作内容
+
+1. 既存の`tools/dev-build.ps1`経由で`tsgen.exe`をビルドする
+   (§10.2/§12.3の`deps.json`回避策を1箇所にまとめておくため)。
+2. `.elements`ファイルと`cases.json`の両方を持つ各フィクスチャ
+   ディレクトリについて、素の`EBuild.exe /Configuration:Release`で
+   フィクスチャをビルドする。**フィクスチャについては`deps.json`の
+   パッチは不要** — `tsgen.exe`とは異なり、フィクスチャのDLLは
+   実行されることがなく、`tsgen`が(§10の)`MetadataLoadContext`経由で
+   メタデータとして読み込むだけなので、`tsgen.exe`自体に必要な
+   ランタイムアセットの穴の回避策はここには当てはまらない。
+3. 各ケースについて、そのケースの`args`を付けて`tsgen generate
+   --assembly <fixture.dll> --source <fixtureDir> --out
+   tests/fixtures/<Fixture>/_actual/<case.name>`を実行し、`index.d.ts`
+   を`expected/<...>`と比較する(比較前に両者とも改行コードを正規化
+   するので、将来gitの設定やエディタに起因するCRLF/LFの食い違いが
+   誤検知の失敗を生まないようにしている)。
+4. `-UpdateSnapshots`スイッチ: 比較する代わりに現在の出力から
+   `expected/*.d.ts`全体を再生成する — 意図的な出力変更を行った際の
+   通常のスナップショットテストのワークフロー(その後は他のスナップ
+   ショットテストと同様、素の`git diff`で差分が意図通りか確認する)。
+5. ケースごとに`[PASS]`/`[FAIL]`の行を出力し(失敗時は`Compare-Object`
+   による行単位の差分も表示)、最後にサマリー件数を出す。何か1つでも
+   失敗すれば非ゼロで終了する。`_actual/`は各フィクスチャのケース
+   実行後に削除される(`.gitignore`に追加済み)ので、成功・失敗に
+   関わらず実行後のツリーはクリーンな状態を保つ。
+
+### 15.3 検証
+
+- クリーンな状態での実行: 両ケース(`default`、`union-nonnull`)とも
+  成功。
+- 失敗パスを確認するため、`expected/default.d.ts`をわざと壊した
+  (`Active = 0` → `Active = 99`): ランナーは正しい行単位の差分
+  (`expected: Active = 99,` / `actual: Active = 0,`)付きで`[FAIL]`を
+  報告し、終了コード1で終了した。もう一方のケースは引き続き正しく
+  `[PASS]`と報告された。スナップショットを元に戻して再実行し、
+  クリーンな状態に戻ったことを確認した。
+- すでに一致している出力に対して`-UpdateSnapshots`を実行しても、
+  内容上の差分は生じなかった(`git status`で確認済み)、つまり何も
+  実際には変わっていない場合は冪等である。
+
+### 15.4 設計/タスクリストへの影響
+
+- §13が「次の構造変更」の前提条件として設定していたもの(あえて
+  やらなかったこと項目2、ここで完了)は満たされた。§13あえてやらな
+  かったこと項目3(`NullabilityScanner`を`SimpleTokenizer`から
+  作り直すこと) — 次の構造変更の候補 — は、リグレッション用の
+  セーフティネットが整った状態で進められる。
+- 現時点ではフィクスチャは`SampleModel`の1つのみで、enum、明示的な
+  `nullable`/`not nullable`、`Unknown`ポリシーへのフォールバックを
+  カバーしている。ネストした型、1つの`type`セクション配下に複数の
+  型がある場合、インデクサ形式のプロパティパラメータリストは
+  **カバーしていない** — §12.6ですでに指摘済みのスキャナの既知の
+  限界のままである。これらのケースを演習するフィクスチャを追加する
+  ことは、§13あえてやらなかったこと項目3にとってちょうどよい
+  付随作業になるはずだ。スキャナの作り直しは、まさにこうした限界を
+  修正するか、新たにリグレッション用に固定するかのどちらかを行う
+  タイミングだからである。

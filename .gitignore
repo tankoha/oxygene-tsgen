@@ -15,3 +15,7 @@
 *.suo
 *.user
 .vs/
+
+# Scratch output from tools/run-tests.ps1 (compared against committed
+# tests/fixtures/*/expected/*.d.ts snapshots, never itself committed).
+_actual/
