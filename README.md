@@ -28,10 +28,10 @@ applications: it locates `Inertia.Render(componentName, data)` calls in
 controller code and generates the TypeScript type for `data` as the Props type
 consumed by the corresponding frontend page component (e.g.
 `resources/js/Pages/PageName.tsx`) — together with related "shared data" and
-form-validation-error types (see below). **Note**: which ASP.NET Core Inertia
-adapter (InertiaNetCore / InertiaCore / inertia-dotnet / etc.) and which
-frontend framework (React / Vue / Svelte) to target are still open decisions —
-see [`docs/DESIGN.md` §11](docs/DESIGN.md#11-open-questions) /
+form-validation-error types (see below). **Note**: the target ASP.NET Core
+Inertia adapter is **InertiaNetCore**, and the target frontend framework is
+**React** (both decided 2026-08-01) — see
+[`docs/DESIGN.md` §11](docs/DESIGN.md#11-open-questions) /
 [`HANDOFF.md` §6.4](HANDOFF.md#64-open-questions).
 
 .NET アセンブリ (`*.dll`) をリフレクションで読み込み、TypeScript の型を生成する
@@ -41,9 +41,9 @@ CLI ツールです。最近のスコープ絞り込み ([`HANDOFF.md`](HANDOFF.
 `Inertia.Render(componentName, data)` 呼び出しを検出し、対応するフロントエンド側ページ
 コンポーネント (例: `resources/js/Pages/PageName.tsx`) が受け取るProps型として `data`
 の型を生成します。あわせて、関連する「共有データ」型やフォームバリデーションエラー型も
-生成対象です (下記参照)。**なお**、採用するASP.NET Core向けInertiaアダプタ
-(InertiaNetCore / InertiaCore / inertia-dotnet 等) や想定フロントエンドフレームワーク
-(React / Vue / Svelte) はまだ未決定です。詳細は
+生成対象です (下記参照)。**なお**、採用するASP.NET Core向けInertiaアダプタは
+**InertiaNetCore**、想定フロントエンドフレームワークは**React**にそれぞれ
+決定しました (2026-08-01)。詳細は
 [`docs/DESIGN.md` §11](docs/DESIGN.md#11-open-questions) /
 [`HANDOFF.md` §6.4](HANDOFF.md#64-open-questions) を参照してください。
 
@@ -180,3 +180,15 @@ oxygene-tsgen/
 ## License / ライセンス
 
 [MIT License](LICENSE)
+
+This covers the tool's own source code. It is currently built with a
+**Trial** edition of RemObjects Elements, which does not permit
+distributing built artifacts (binaries) — only source. See
+[`HANDOFF.md` §9](HANDOFF.md#9-remobjects-licenseeula-confirmation-vendor-reply-2026-08-01)
+for details.
+
+これは本ツール自体のソースコードに対するライセンスです。現在は
+RemObjects Elementsの**Trial版**でビルドしており、ビルド成果物
+(バイナリ) の配布は許可されていません（ソースのみ配布可）。詳細は
+[`HANDOFF_jp.md` §9](HANDOFF_jp.md#9-remobjectsライセンスeula確認-ベンダー回答2026-08-01)
+を参照してください。

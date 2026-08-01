@@ -341,10 +341,11 @@ Narrow the primary use case of this tool (oxygene-tsgen) from the general
 frontend types for ASP.NET Core applications that use Inertia.js**.
 Specifically, the focus becomes generating the TypeScript type for the
 `data` object that a controller returns via
-`Inertia.Render(componentName, data)` (assuming one of the ASP.NET Core
-Inertia adapters — InertiaNetCore / InertiaCore / inertia-dotnet / etc.;
-which one exactly is an open question, see §6.4) as the Props type for the
-corresponding frontend page component.
+`Inertia.Render(componentName, data)` (targeting the **InertiaNetCore**
+adapter — decided 2026-08-01, see §6.4; InertiaCore's development has
+stalled and InertiaNetCore is one of the few forks still actively
+maintained) as the Props type for the corresponding frontend page
+component.
 
 ### 6.2 Impact on the existing design (items that need to be surveyed)
 
@@ -383,25 +384,27 @@ corresponding frontend page component.
 
 ### 6.3 New investigation items to consider (add to the start-of-Phase-2 task list)
 
-- Selecting which ASP.NET Core Inertia adapter to adopt (InertiaNetCore /
-  InertiaCore / spark-inertiajs / inertia-dotnet / etc. — multiple forks and
-  implementations currently exist, so compare by update frequency and
-  feature coverage before deciding).
+- ~~Selecting which ASP.NET Core Inertia adapter to adopt~~ **Decided:
+  InertiaNetCore** (2026-08-01, see §6.4).
 - Confirming how the chosen adapter types the `data` argument of
   `Inertia.Render(componentName, data)` (is it an `object` parameter, does
   it use generics?).
 - Technical verification of how to detect `Inertia.Render` calls from inside
   controller method bodies (will Roslyn-style expression-tree analysis be
   needed, or is IL analysis sufficient?).
-- The shape of the generated Props type (`interface Props { ... }` vs. a
-  type for `defineProps<...>()`, etc.) changes depending on the frontend
-  framework assumed (React / Vue / Svelte). The target framework needs to be
-  settled.
+- ~~The shape of the generated Props type... The target framework needs to
+  be settled.~~ **Decided: React** (2026-08-01, see §6.4) — generated Props
+  types are `interface Props { ... }`-style, not a Vue `defineProps<...>()`
+  or Svelte-oriented shape.
 
 ### 6.4 Open questions
 
-- Selection of the adapter and frontend framework above is unresolved —
-  settle this in the next session, or the next conversation with the user.
+- ~~Selection of the adapter~~ **Decided 2026-08-01: InertiaNetCore.**
+  Rationale (from the user): InertiaCore's development has stalled, and
+  InertiaNetCore is one of the few forks still seeing active development.
+- ~~Frontend framework selection~~ **Decided 2026-08-01: React.** Rationale
+  (from the user): Japan's Digital Agency (デジタル庁) publishes publicly
+  available reference snippets/components in React.
 - Whether to replace the existing §8 (generic API integration) with an
   Inertia-oriented version, or keep both as coexisting modes, needs a
   decision (from an over-engineering-avoidance standpoint, unifying around
@@ -416,17 +419,10 @@ Environment: RemObjects Elements 13.0.0.3101 (develop),
 
 ### 7.1 Investigation method
 
-- Searched under `bin/` for filename patterns (server/lsp/ast/dump) → the
-  only hits were the Data Abstract (a separate product) `ServerAccess`
-  templates, judged unrelated to a language server.
-- Checked `EBuild.exe --help` → no hidden AST-dump/parse-only-style flags.
-  A `--host` (interactive host mode) option exists, but its purpose is
-  unverified (most likely aimed at speeding up incremental builds, doesn't
-  look aimed at exposing an AST).
-- Loaded the major DLLs (`RemObjects.Elements.Compiler.dll`,
-  `RemObjects.Elements.dll`, `RemObjects.Elements.Oxygene.dll`,
-  `RemObjects.Elements.Tools.dll`, etc.) via .NET reflection and searched
-  for type names related to AST/Syntax/Parser/Tokenizer/LanguageServer.
+Rather than building a lexer from scratch, looked for whether the IDE's
+own completion feature already exposes something usable for this —
+it has to be getting token/syntax information from somewhere. Found it by
+casually looking through the Elements SDK's public API surface.
 
 ### 7.2 Findings
 
@@ -567,3 +563,92 @@ Oxygene **leaves no trace of this information in IL/metadata at all**.
 - Whichever session next touches DESIGN.md should update §4 based on this
   section's results, making the "token-scan approach" the primary axis of
   the initial `INullabilityProvider` implementation.
+
+---
+
+## 9. RemObjects license/EULA confirmation (vendor reply, 2026-08-01)
+
+Emailed RemObjects to confirm the Trial edition's license position on
+casually using the Elements SDK's public API surface (§7) as a
+dependency. Reply received same day (2026-08-01).
+
+### 9.1 Questions and answers
+
+1. **Does casually looking through the Elements SDK's public types (as
+   done in §7) constitute "reverse engineering" under the Trial edition's
+   EULA?**
+   → No ("i don't believe so").
+2. **Is it permitted to reference and call the public `Tokenizer` class
+   as a runtime dependency, without redistributing the SDK DLLs
+   themselves?**
+   → Yes ("Without redistributing these yourself, sure.").
+3. **Is it OK to keep the tool's source code publicly available?**
+   → Yes, explicitly welcomed ("Certainly. In fact i'd love to see it!").
+4. **Is it OK to publish built binaries, given they were built with the
+   Trial edition?**
+   → **No.** At least a Personal or Academic license is required "to
+   distribute anything." This confirms and formalizes the constraint
+   already tracked as a standing rule for this repo (never commit/publish
+   build output built with the Trial edition).
+
+**Scope note:** this confirms only the specific, narrow thing that was
+asked — casually inspecting public API surface via reflection, and
+depending on a public class at runtime. It does not extend to
+decompilation, disassembly, or anything not explicitly asked about above;
+don't read it more broadly than that.
+
+### 9.2 New, unconfirmed constraint surfaced by the reply
+
+The same answer to question 4 also stated a Personal or Academic license
+is needed "to use the product longer than 3 days" — worded as a condition
+separate from the distribution restriction above. This reads as a
+possible hard usage cap on the Trial edition itself (independent of
+whether anything is ever distributed), but the exact meaning is
+unconfirmed:
+
+- 3 calendar days from install (2026-08-01)?
+- 3 cumulative days of actual use?
+- 3 evaluation "sessions"?
+
+**This is not yet resolved.** Given Phase 2 (implementation) has not
+started and will require sustained hands-on use of Elements/EBuild, this
+should be clarified with RemObjects (or a Personal/Academic license
+should be budgeted for) before relying on extended Trial use through
+Phase 2. Follow up before starting item 3 in §4 (MVP implementation) if
+the 3-day window is at risk of expiring.
+
+### 9.3 Impact on §11 item 4 (Distribution/packaging approach)
+
+The "Distribution/packaging approach" open question must now be decided
+jointly with licensing status, not on technical merits alone: standalone
+binary distribution (or any built-artifact distribution — npm-bundled
+binary, dotnet tool package, etc.) is blocked until at least a Personal or
+Academic license is obtained, regardless of which packaging method is
+chosen. Source-only distribution remains unaffected.
+
+### 9.4 New investigative lead: possible NRT info outside standard reflection (unconfirmed)
+
+In the same reply, responding to being told that Echoes doesn't emit
+`NullableAttribute`/`NullableContextAttribute` (§8), the RemObjects
+contact added: "Ah yes, that info would be in the metadata.fx slice of
+the assembly, probably."
+
+This hints that NRT information may live somewhere other than the
+standard ECMA-335 custom-attribute tables checked in §8 (via
+`CustomAttributeData`) — possibly an Elements-specific metadata
+region/resource ("metadata.fx"). The hedge ("probably") suggests the
+contact wasn't fully certain either, and the term hasn't been independently
+verified. Not yet investigated.
+
+**If confirmed, this could mean NRT info is recoverable directly**,
+without the Tokenizer-based source-level scan adopted in §7/§8.3 — which
+would simplify the `INullabilityProvider` design considerably. **Do not
+treat §8.3's "Tokenizer is the only practically viable implementation"
+conclusion as final until this is checked.** Two ways to follow up:
+
+- Hands-on: inspect the compiled assembly's resources/custom metadata
+  sections for something matching "metadata.fx" and check whether it's
+  readable via a documented Elements API (not just standard
+  `System.Reflection`).
+- Ask RemObjects directly what "metadata.fx" refers to, and whether/how
+  it's readable from outside the compiler itself.

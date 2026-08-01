@@ -1024,19 +1024,27 @@ Items to resolve before Phase 2 begins, or immediately after. Also documented in
    (bundling a Node.js binary, or an npm wrapper), standalone binary
    distribution (including a native build via Elements/Island), and
    distribution as a dotnet tool; this comparison has not yet been started.
+   **Licensing caveat (confirmed with RemObjects 2026-08-01, `HANDOFF.md`
+   §9):** whichever option is chosen, distributing any built artifact
+   requires at least a Personal or Academic Elements license — the Trial
+   edition used so far permits source-only distribution. Factor this into
+   the comparison, not just technical merit.
 5. **Technical feasibility of dynamic assembly loading for plugins (§6.3,
    Approach A)** (whether a dynamic-loading API exists on Echoes).
-6. **Which ASP.NET Core Inertia adapter to target** — `InertiaNetCore` /
-   `InertiaCore` / `inertia-dotnet` / others — multiple community forks exist with
-   no clear single standard; not yet compared or decided (`HANDOFF.md` §6.3/§6.4).
-   Affects how `Inertia.Render`'s call sites are detected (§3.5) and how Shared
-   Data registration is discoverable (§8.2). **Do not assume any specific choice
-   has been made** — this document intentionally does not pick one.
-7. **Which frontend framework to assume** — React / Vue / Svelte — for the shape
-   of generated Props types (`interface Props { ... }` vs. a Vue
-   `defineProps<...>()`-oriented type, etc.). Not yet decided; affects §2.6, §7.4,
-   and the generic-parameter shape in §5.4. **Do not assume any specific choice
-   has been made** here either.
+6. ~~Which ASP.NET Core Inertia adapter to target~~ **Decided: `InertiaNetCore`**
+   (2026-08-01 — see `HANDOFF.md` §6.4). Rationale: `InertiaCore`'s development
+   has stalled, and `InertiaNetCore` is one of the few forks still seeing active
+   development. Affects how `Inertia.Render`'s call sites are detected (§3.5)
+   and how Shared Data registration is discoverable (§8.2) — those sections
+   should now be written against `InertiaNetCore` specifically rather than
+   left adapter-agnostic.
+7. ~~Which frontend framework to assume~~ **Decided: React** (2026-08-01 — see
+   `HANDOFF.md` §6.4). Rationale: Japan's Digital Agency (デジタル庁) publishes
+   publicly available reference snippets/components in React, and the
+   generated Props types should stay compatible with that ecosystem. Affects
+   §2.6, §7.4, and the generic-parameter shape in §5.4 — those should now be
+   written as `interface Props { ... }`-style output rather than kept
+   framework-agnostic.
 8. **Technical feasibility of entry-point-driven type discovery** (§3.5) —
    whether `Inertia.Render` call sites and their argument types can be resolved
    via IL-level method-body analysis, or would require Roslyn-syntax-tree-level
@@ -1060,9 +1068,10 @@ Items to resolve before Phase 2 begins, or immediately after. Also documented in
   RemObjects Elements ships on a weekly release cycle, it's recommended to
   re-check for any differences against the latest documentation when Phase 2
   begins.
-- **No web research has yet been performed on ASP.NET Core Inertia.js adapters**
-  (`InertiaNetCore`/`InertiaCore`/`inertia-dotnet`/etc.), their relative maturity,
-  or the frontend-framework question. This is intentional — it is called out as
-  open questions §11 items 6–7 rather than researched and pre-decided here, to
-  avoid this document prematurely committing to a specific library or framework
-  choice ahead of the next session's/user's decision (`HANDOFF.md` §6.4).
+- **No formal web research was performed comparing ASP.NET Core Inertia.js
+  adapters** — the `InertiaNetCore` choice (§11 item 6) was made directly by
+  the user based on observed maintenance activity (`InertiaCore` stalled,
+  `InertiaNetCore` still active), not a documented comparison here.
+- Likewise, **React** (§11 item 7) was decided directly by the user
+  (citing Japan's Digital Agency's publicly available React reference
+  snippets), not via a documented comparison here.

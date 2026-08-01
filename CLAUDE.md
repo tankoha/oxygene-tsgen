@@ -48,12 +48,45 @@ priority chain wins" pattern as the type mapper: `ITypeMappingRule`,
 
 ## Known unresolved technical risk
 
-It has not been verified whether Oxygene's Echoes (.NET) backend emits
-`NullableAttribute`/`NullableContextAttribute` — the Roslyn-specific IL
-convention C# uses to encode nullable reference type info. This is the
-top-priority item to verify at the start of Phase 2 (see `HANDOFF.md` §3–4).
-The NRT design (`docs/DESIGN.md` §4) is deliberately built as a swappable
-`INullabilityProvider` chain to absorb this uncertainty.
+**Resolved 2026-08-01** (hands-on verification, see `HANDOFF.md` §8):
+Oxygene's Echoes (.NET) backend does **not** emit
+`NullableAttribute`/`NullableContextAttribute` for Oxygene-authored code.
+Reflection alone therefore cannot recover NRT info for types Oxygene
+itself wrote; the design now relies on a source-level token scan using
+the official `RemObjects.Elements.Code.Oxygene.Tokenizer` class
+(`RemObjects.Elements.Oxygene.dll`, see `HANDOFF.md` §7) as the primary
+`INullabilityProvider` implementation. `docs/DESIGN.md` §4 still needs to
+be revised to reflect this (tracked in `HANDOFF.md` §8.3) — don't assume
+the doc's current text matches this conclusion until that revision lands.
+
+The current top unverified technical risk instead: whether a
+`System.Reflection.MetadataLoadContext`-equivalent (metadata-only assembly
+loading) is usable directly from Oxygene/Echoes (`HANDOFF.md` §4 item 2 /
+`docs/DESIGN.md` §11 item 2) — not yet investigated hands-on.
+
+## License constraints
+
+The Elements install used for this project is a **Trial** license,
+confirmed directly with RemObjects by email (2026-08-01 — see
+`HANDOFF.md` §9):
+
+- Never commit or publish built output (`bin/`, `obj/`, `*.dll`, `*.exe`,
+  `*.pdb`, etc.) — distributing anything built with the Trial edition
+  requires at least a Personal or Academic license. Source code is
+  unaffected and may be published freely (RemObjects explicitly welcomed
+  this).
+- Casually using the Elements SDK's public API surface (e.g. the
+  `Tokenizer` class) as a runtime dependency, without redistributing the
+  DLLs themselves, is vendor-confirmed as permitted — not reverse
+  engineering. This confirmation is narrow: it does not extend to
+  decompilation, disassembly, or anything not explicitly asked about (see
+  `HANDOFF.md` §9.1 scope note).
+- **Unresolved:** the same vendor reply implies Trial usage itself may be
+  capped at 3 days, separately from the distribution restriction above.
+  Exact meaning unconfirmed as of 2026-08-01 (calendar days since install?
+  cumulative days of use? evaluation sessions?) — see `HANDOFF.md` §9.2.
+  Don't assume extended Trial access is available for Phase 2 work
+  without checking this first.
 
 ## Documentation conventions
 
