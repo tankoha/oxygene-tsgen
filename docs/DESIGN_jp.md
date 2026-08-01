@@ -383,12 +383,19 @@ component名→型FQNの対応リストを設定ファイルに明示する等) 
 
 ## 4. NRT (Nullable Reference Types) 解析方針
 
-### 4.1 調査結果のサマリ (Web調査ベース)
+> **改訂メモ (2026-08-02):** このセクションは元々、実機検証を一切行う前 —
+> Echoes が NRT メタデータをそもそも出力するのかどうかが最大の未解決事項
+> (§11 項目1) だった時点 — に書かれたものである。実機検証の結果
+> (`HANDOFF.md` §8) と、それを受けた MVP 実装 (`HANDOFF.md` §11–§13) を
+> 反映して書き直した。元の設計のプロバイダチェーンという骨格はそのまま
+> 生きている。変わったのは「どのプロバイダが主軸か」である。
 
-このセクションは Web 検索ツールを用いて調査した内容と、調査で確認できなかった
-(=未検証・要実機検証) 部分を明確に分けて記載する。
+### 4.1 調査結果のサマリ (Web調査+実機検証)
 
-**確認できたこと:**
+このセクションでは、Web 調査で確認できたこと、その後実機検証で確認できたこと、
+そして依然として本当に未確定なことを分けて記載する。
+
+**Web調査で確認できたこと (2026年7月時点):**
 
 - C# の Nullable Reference Types (NRT) は言語機能であり、CLR自体には
   nullability の概念がない。Roslyn (C#コンパイラ) は `?`/非`?` の情報を
@@ -413,23 +420,45 @@ component名→型FQNの対応リストを設定ファイルに明示する等) 
   RemObjects公式ドキュメント「Nullability」「Oxygene/Types/Nullability」による)。
   デフォルトは「参照型は nullable、値型は non-nullable」で C# と同じ考え方。
 
-**確認できなかったこと (要実機検証、リスクとして明記):**
+**実機検証で確認できたこと (2026-08-01、`HANDOFF.md` §8) — 本セクションの
+旧版が最重要リスクとしてフラグを立てていた未確認事項は、これで解決した:**
 
-- Oxygene (Echoes バックエンド) が `nullable`/`not nullable` 修飾を実際に
-  **`NullableAttribute`/`NullableContextAttribute` としてIL出力するかどうか**は、
-  公式ドキュメント (docs.elementscompiler.com の Nullability 関連ページ) を
-  調査した範囲では明記されていなかった。これは「Oxygeneで書かれたアセンブリを
-  C#の慣習でNRT情報を読もうとしたときに実際に読めるか」を左右する最重要な
-  未確認事項である。
-- 仮に Oxygene が独自の属性 (例: `RemObjects.Elements.*Nullable*`) を使っている
-  場合、本ツールはそちらも解釈できるようにする必要があるが、現時点でその属性の
-  有無・名前は不明。
+- Oxygene の Echoes バックエンドは、Oxygene で書かれたコードについて
+  **NRT 情報をコンパイル済みアセンブリのメタデータに一切出力しない** —
+  `NullableAttribute`/`NullableContextAttribute` も、Oxygene 独自のカスタム
+  属性も、modopt/modreq カスタム修飾子も、何も無い。`nullable`/`not nullable`
+  宣言を含むプローブ用アセンブリをビルドし、あらゆるレベル (アセンブリ、
+  モジュール、型、フィールド、プロパティ、メソッドのパラメータ/戻り値) で
+  `CustomAttributeData` とカスタム修飾子を列挙して検証済み。
+- それでも nullability 修飾はコンパイラが強制する本物の言語機能である
+  (例: `not nullable` のフィールド/プロパティは宣言箇所での初期化が
+  コンパイル時に強制される — `HANDOFF.md` §8.1)。情報は存在し検査もされて
+  いるが、ソースコードの外に一切出てこないというだけである。
+- 帰結: **Oxygene で書かれたアセンブリについては、リフレクションベースの
+  NRT 復元は不可能であり、ソースレベル解析が現時点で判明している唯一の
+  実行可能な経路である。** リフレクションベースのプロバイダに残る価値は、
+  対象と一緒にロードされる C#/VB 製の依存アセンブリに対してのみ —
+  Oxygene コードに対しては例外なく全メンバーで Unknown を返す。
 
-### 4.2 設計方針 (上記の不確実性を前提にした設計)
+**依然として未確認 (手がかりとして追跡中、ブロッカーではない):**
 
-不確実性がある以上、**「NRT情報ソースを差し替え可能なプラガブルな抽象」**として
-設計し、Phase 2 の最初期タスクとして実機検証 (§9, HANDOFF.md) を行い、
-検証結果に応じて実装を確定する。
+- RemObjects からの返信 (`HANDOFF.md` §9.4) に、NRT 情報は「おそらく
+  アセンブリの metadata.fx スライスにある」との示唆があった — §8 の検証で
+  調べた標準 ECMA-335 属性テーブルの外にある、Elements 固有のメタデータ
+  領域の可能性がある。存在自体も、コンパイラの外から読めるかどうかも
+  未検証。もし裏付けが取れれば、メタデータベースの復元経路が復活し、
+  後述のソーススキャナは最適化ないしフォールバックに格下げされる。それ
+  までは本設計はソーススキャン路線で進めるが、§4.2 のプロバイダチェーンには
+  意図的に `MetadataFxProvider` 用のスロットを空けてある。ソーススキャナの
+  さらなる強化に投資する前に、この手がかりを先に確認すること
+  (`HANDOFF.md` §9.4)。
+
+### 4.2 設計方針: プロバイダチェーン、主軸はソーススキャナ
+
+**「NRT情報ソースを差し替え可能なプラガブルな抽象」** (`INullabilityProvider`)
+は当初の設計のまま維持する — この抽象は実機検証がどちらに転んでも吸収できる
+ように導入したものであり、実際にその役目を果たした: §8 の結果への適応は
+「どのプロバイダをどの優先順で持つか」の問題であって、再設計ではない。
 
 ```oxygene
 type
@@ -441,7 +470,8 @@ type
   end;
 
   NullabilitySource = public enum (
-    ExplicitAttribute,      // NullableAttribute等を直接発見
+    SourceTokenScan,        // Oxygeneソース中の nullable / not nullable トークンを発見 (主経路、§8)
+    ExplicitAttribute,      // NullableAttribute等を直接発見 (C#/VB製の依存アセンブリ)
     ContextAttribute,       // NullableContextAttributeからの継承
     ValueTypeDefault,       // 値型のデフォルト規則から推定
     NoInformation           // 何も情報がなく Unknown 扱い
@@ -454,31 +484,72 @@ type
   end;
 ```
 
-- **組み込みプロバイダ1: `RoslynStyleAttributeProvider`**: 標準の
-  `NullableAttribute`/`NullableContextAttribute` を解釈する (C#/VBが生成する
-  アセンブリ、および Echoes が同じ規約に従っている場合の Oxygene アセンブリの
-  両方をカバーできる想定)。
-- **組み込みプロバイダ2: `ValueTypeDefaultProvider`**: 属性が全く無い場合の
-  フォールバックとして、値型は non-nullable、参照型は「情報無し=Unknown」とする
-  保守的な規則 (Unknown は `.d.ts` では `T | null | undefined` 的に安全側へ倒すか、
-  設定で「Unknown時は non-null 扱い」にするかを選べるようにする)。
-- **拡張ポイント**: Phase 2 の実機検証で Oxygene 独自の属性が見つかった場合、
-  `OxygeneNativeNullabilityProvider` を追加するだけで済むように、
-  この抽象を最初から用意しておく。
+プロバイダの構成 (優先順):
+
+- **プロバイダ1 (主軸): `OxygeneSourceScanProvider`** — プロジェクト自身の
+  `.pas` ファイルに対するソースレベルのトークンスキャン。自前の字句解析
+  ではなく Elements SDK 公式のトークナイザ API の上に構築する
+  (`HANDOFF.md` §7)。§8 の結果により、これは最適化などではなく
+  **Oxygene で書かれたコードに対して Unknown 以外を返せる唯一の実装**で
+  あり、だからこそ MVP は本セクションの旧版が示唆していたような後回しに
+  せず、初日からこれを実装した (`HANDOFF.md` §11)。実装の実態
+  (`src/Tsgen/Nrt/NullabilityScanner.pas`、`HANDOFF.md` §12): 明示的に
+  ヒューリスティックなスキャナ — フルパーサではない — で、トップレベル型の
+  プロパティとフィールドにスコープを絞り、`RemObjects.Elements.Oxygene.
+  SimpleTokenizer` を使用し、トークンID定数は
+  `RemObjects.Elements.Code.Oxygene.Token` の公開フィールドを直接参照する
+  (`HANDOFF.md` §13)。既知の制限 (ネストした型、インデクサ形式のプロパティ。
+  メソッドのパラメータ/戻り値の NRT は Inertia Page Props の形に影響しない
+  ため意図的に先送り) は `HANDOFF.md` §12.6/§13 に整理してある。ソースへの
+  アクセスが必要になるため、`--assembly` に加えて `--source <dir>` という
+  CLI 入力が増える — 元のリフレクションのみの設計には不要だった入力である。
+- **プロバイダ2: `RoslynStyleAttributeProvider`** — 標準の
+  `NullableAttribute`/`NullableContextAttribute` を解釈する。**当初の
+  「Oxygene アセンブリもカバーできる想定」という役割からは格下げ**: §8 に
+  より Oxygene が書いたものに対しては全て Unknown を返すため、残る価値は
+  対象と一緒にロードされる C#/VB 製の依存アセンブリに対してのみ。未実装
+  (MVP後)。
+- **プロバイダ3: `ValueTypeDefaultProvider`** — 変更なしの保守的
+  フォールバック: 値型は non-nullable、参照型は「情報無し=Unknown」。
+- **空きスロット: `MetadataFxProvider`** — 未確認の metadata.fx の手がかり
+  (§4.1) のために予約。裏付けが取れた場合、ソースが入手できないアセンブリ
+  向けにプロバイダ1の前段に入る (または置き換える)。
+
+**実装状況 (`HANDOFF.md` §13 時点):** MVP はスキャナの結果ディクショナリを
+`INullabilityProvider` インターフェースを介さず IR ビルダーに直結している —
+チェーン抽象は引き続き目標形だが、放棄ではなく新規スコープとして先送り
+(`HANDOFF.md` §13 の未着手リスト項目4)。一方で IR は三値の結果
+(`Unknown`/`IsNullable`/`IsNotNullable`) を未解決のまま Emitter まで運ぶ
+形に既になっており、これはプロバイダチェーンと後述の `mark-unknown`
+ポリシーの両方にとってのデータモデル上の前提条件である。
 
 ### 4.3 なぜこの設計か
 
-- 「不確実な外部要因 (コンパイラのメタデータ出力仕様) に依存する解析ロジックは、
-  差し替え可能なプロバイダとして切り出す」という原則に基づく。もし
-  `RoslynStyleAttributeProvider` だけをハードコードして実装し、後から
-  Oxygene が別の属性を使っていると判明した場合、解析ロジック全体を書き直す
-  リスクがある。プロバイダチェーンにしておけば追加のみで対応できる。
-- Unknown 状態を明示的に第一級で扱う理由: 「わからない」を握りつぶして
-  勝手に non-null と判定すると、実行時に null が来てランタイムエラーになる
-  TypeScript コードを生成してしまう (安全性の欠如)。逆に全部 nullable
-  扱いにすると型の有用性が下がる。ユーザーが `--nrt-unknown-policy`
-  (仮称: `assume-nullable` | `assume-non-nullable` | `mark-unknown`) を選べる
-  ようにし、暗黙の安全性判断をツールが勝手に行わないようにする。
+- 元の原則 — 「不確実な外部要因 (コンパイラのメタデータ出力仕様) に依存する
+  解析ロジックは、差し替え可能なプロバイダとして切り出す」 — は、もはや
+  仮説ではなく実証済みとなった: 検証の結果 (§8) は旧版が想定していた中で
+  *最悪の*ケース (別の属性ですらなく、メタデータが一切無い) だったにも
+  かかわらず、その吸収に必要だったのは再設計ではなく「どのプロバイダが
+  主軸か」の変更だけだった。同じ理由で、チェーンにはソーススキャナを
+  最終形と断定せず metadata.fx (§4.1) 用の空きスロットを残してある。
+- Unknown 状態を明示的に第一級で扱う理由 — そしてこれは §8 の後、重要性が
+  増しこそすれ減ってはいない: **リフレクション越しに見た Oxygene 製コード
+  にとって、Unknown は稀なエッジケースではなく、恒常的に発生するデフォルト
+  状態である** (`HANDOFF.md` §8.3)。実務上の帰結は2つ:
+  - 意味のある NRT 出力には `--source` が必要であり、省略時には CLI が
+    「全メンバーが unknown ポリシーのデフォルトにフォールバックする」旨を
+    警告する (黙って劣化しない)。
+  - Unknown ポリシーの選択は、例外的な入力への逃げ道ではなく、初回実行時の
+    通常の判断事項である。
+- 「わからない」を握りつぶして勝手に non-null と判定すると、実行時に null が
+  来てランタイムエラーになる TypeScript コードを生成してしまう (安全性の
+  欠如)。逆に全部 nullable 扱いにすると型の有用性が下がる。ユーザーが
+  `--nrt-unknown-policy` (`assume-nullable` | `assume-non-nullable` |
+  `mark-unknown`) を選べるようにし、暗黙の安全性判断をツールが勝手に
+  行わないようにする。MVP は前者2つを実装済み (`nullable` | `non-null`
+  として)。`mark-unknown` は `HANDOFF.md` §13 の IR 再構成によりデータ
+  モデル上はもうブロックされていないが、CLI オプションとしてはまだ
+  配線されていない。
 
 ---
 
@@ -871,9 +942,13 @@ export async function getUserById(
 
 - 基本型マッピング (プリミティブ、`string`/`number`/`boolean`/`Date`等の既知BCL型)
 - enum (数値 or 文字列リテラルUnion、設定で選択可能。§2.5の簡易版)
-- nullable参照型の反映 (§4のプロバイダ抽象は用意するが、実装は
-  `RoslynStyleAttributeProvider` 相当の1系統のみで開始し、実機検証結果を
-  見てから広げる)
+- nullable参照型の反映 (実装は Tokenizer ベースのソーススキャンから開始する。
+  この箇条書きが元々記述していた `RoslynStyleAttributeProvider` 先行の
+  路線ではない — 実機検証により、Oxygene で書かれたコードからは
+  リフレクションでは何も復元できないと判明し、ソーススキャンが唯一実行
+  可能な初手となったため。改訂後の §4 と `HANDOFF.md` §8/§11 を参照。
+  §4 のプロバイダチェーン抽象は引き続き目標形だが、初回実装の必須要件
+  ではなかった)
 - 名前空間 → ESモジュール階層での `.d.ts` 出力 (単一/分割ファイルの基本切替)
 - CLIとしての最小構成 (`tsgen generate --assembly X.dll --out ./dist`)
 
@@ -922,8 +997,15 @@ Shared Data / フォームエラー型、§2.6) やエントリポイント駆�
 
 Phase 2着手前、または着手直後に解決すべき事項。詳細は `HANDOFF.md` にも記載。
 
-1. **Oxygeneコンパイラ(Echoes)がNRT情報を`NullableAttribute`/
-   `NullableContextAttribute`として出力するか** — 実機検証が必要 (§4.1)。
+1. ~~Oxygeneコンパイラ(Echoes)がNRT情報を`NullableAttribute`/
+   `NullableContextAttribute`として出力するか~~ **2026-08-01に解決 —
+   `HANDOFF.md` §8参照: 出力しない。Echoes はNRT情報をアセンブリの
+   メタデータに一切出力しない** (属性も、カスタム修飾子も、Oxygene独自の
+   何かも無い)。したがって Oxygene で書かれたコードについては、ソース
+   レベルのトークンスキャンが主経路となる (改訂後の§4参照)。関連する
+   手がかりが1つ未解決のまま残っている: RemObjects が示唆した Elements
+   固有の「metadata.fx」領域 (`HANDOFF.md` §9.4) により、メタデータ
+   ベースの経路が復活する可能性 — 未確認、§4.1 で追跡中。
 2. ~~Oxygene製アセンブリに対する`System.Reflection`相当APIの具体的な実行環境~~
    **2026-08-02に解決 — `HANDOFF.md` §10参照: `System.Reflection.MetadataLoadContext`
    はOxygene/Echoesから直接使え、対象アセンブリをメタデータのみで読み込める。

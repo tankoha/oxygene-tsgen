@@ -67,12 +67,15 @@ priority chain wins" pattern as the type mapper: `ITypeMappingRule`,
 Oxygene's Echoes (.NET) backend does **not** emit
 `NullableAttribute`/`NullableContextAttribute` for Oxygene-authored code.
 Reflection alone therefore cannot recover NRT info for types Oxygene
-itself wrote; the design now relies on a source-level token scan using
-the official `RemObjects.Elements.Code.Oxygene.Tokenizer` class
-(`RemObjects.Elements.Oxygene.dll`, see `HANDOFF.md` §7) as the primary
-`INullabilityProvider` implementation. `docs/DESIGN.md` §4 still needs to
-be revised to reflect this (tracked in `HANDOFF.md` §8.3) — don't assume
-the doc's current text matches this conclusion until that revision lands.
+itself wrote; the design relies on a source-level token scan built on the
+Elements SDK's official tokenizer surface (`RemObjects.Elements.Oxygene.dll`
+— `SimpleTokenizer` in the MVP as built, see `HANDOFF.md` §7/§12.2) as the
+primary `INullabilityProvider` implementation. `docs/DESIGN.md` §4 was
+revised on 2026-08-02 to reflect all of this (done by the Fable5 review
+agent at the user's request, together with the matching §10.1/§11-item-1
+touch-ups and the full `DESIGN_jp.md` mirror), closing the doc-drift item
+previously tracked in `HANDOFF.md` §8.3 — the design doc and this
+conclusion now agree.
 
 **Resolved 2026-08-02** (hands-on verification, see `HANDOFF.md` §10):
 `System.Reflection.MetadataLoadContext` **is** usable directly from

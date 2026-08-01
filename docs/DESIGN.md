@@ -418,12 +418,19 @@ actual MVP path is left open pending the technical validation above.
 
 ## 4. Nullable Reference Types (NRT) Analysis Strategy
 
-### 4.1 Research Summary (Based on Web Research)
+> **Revision note (2026-08-02):** this section was originally written before any
+> hands-on verification, when whether Echoes emits NRT metadata at all was still
+> the single biggest open question (§11 item 1). It has been rewritten to
+> reflect the verification result (`HANDOFF.md` §8) and the MVP implementation
+> that followed (`HANDOFF.md` §11–§13). The provider-chain shape of the original
+> design survives unchanged; what changed is which provider is primary.
 
-This section clearly separates what was confirmed via web research from what
-could not be confirmed (i.e., unverified / requires hands-on verification).
+### 4.1 Research Summary (Web Research + Hands-On Verification)
 
-**Confirmed:**
+This section separates what was confirmed via web research, what has since been
+confirmed hands-on, and what remains genuinely open.
+
+**Confirmed by web research (July 2026):**
 
 - C#'s Nullable Reference Types (NRT) are a language feature; the CLR itself has
   no concept of nullability. Roslyn (the C# compiler) embeds `?`/non-`?`
@@ -449,25 +456,46 @@ could not be confirmed (i.e., unverified / requires hands-on verification).
   Nullability" documentation). The default is "reference types are nullable,
   value types are non-nullable" — the same philosophy as C#.
 
-**Not confirmed (requires hands-on verification, flagged as a risk):**
+**Confirmed hands-on (2026-08-01, `HANDOFF.md` §8) — this resolves the open
+question the original version of this section flagged as its single most
+important risk:**
 
-- Whether Oxygene (the Echoes backend) actually **emits `nullable`/`not nullable`
-  qualifiers as IL-level `NullableAttribute`/`NullableContextAttribute`** was not
-  stated within the official documentation examined (the Nullability-related
-  pages on docs.elementscompiler.com). This is the single most important open
-  question, since it determines whether NRT information can actually be read
-  from an Oxygene-compiled assembly using the C# convention.
-- If Oxygene instead uses its own attribute (e.g., something like
-  `RemObjects.Elements.*Nullable*`), this tool would need to be able to interpret
-  that as well — but at this point, whether such an attribute exists, and what it
-  would be named, is unknown.
+- Oxygene's Echoes backend emits **no NRT information whatsoever into compiled
+  assembly metadata** for Oxygene-authored code — not
+  `NullableAttribute`/`NullableContextAttribute`, not any Oxygene-specific
+  custom attribute, not modopt/modreq custom modifiers. Verified by enumerating
+  `CustomAttributeData` and custom modifiers at every level (assembly, module,
+  type, field, property, method parameter/return value) of a probe assembly
+  built from `nullable`/`not nullable` declarations.
+- The qualifiers are nonetheless a real, compiler-enforced language feature
+  (e.g. `not nullable` fields/properties must be initialized at the declaration
+  site, enforced at compile time — `HANDOFF.md` §8.1). The information exists
+  and is checked; it simply never leaves the source code.
+- Consequence: **for Oxygene-authored assemblies, reflection-based NRT recovery
+  is impossible, and source-level analysis is the only currently-known viable
+  path.** A reflection-based provider retains value only for C#/VB-authored
+  dependency assemblies loaded alongside the target — for Oxygene code it
+  returns Unknown for every member, without exception.
 
-### 4.2 Design Approach (Given the Above Uncertainty)
+**Still unconfirmed (tracked as a lead, not blocking):**
 
-Given this uncertainty, the design treats **the NRT information source as a
-swappable, pluggable abstraction**. Hands-on verification (§9, HANDOFF.md) will
-be carried out as one of the very first Phase 2 tasks, and the implementation
-will be finalized based on the results.
+- A RemObjects reply (`HANDOFF.md` §9.4) hinted that NRT information "would
+  probably be in the metadata.fx slice of the assembly" — possibly an
+  Elements-specific metadata region outside the standard ECMA-335 attribute
+  tables the §8 verification checked. Both its existence and its readability
+  from outside the compiler are unverified. If it pans out, it would restore a
+  metadata-based recovery path and demote the source scanner below to an
+  optimization or fallback; until then the design proceeds on the source-scan
+  path, and the provider chain in §4.2 deliberately leaves a slot open for a
+  `MetadataFxProvider`. Check this lead before investing further in hardening
+  the source scanner (`HANDOFF.md` §9.4).
+
+### 4.2 Design Approach: Provider Chain, with the Source Scanner as Primary
+
+The **swappable, pluggable `INullabilityProvider` abstraction** is retained
+exactly as originally designed — it was introduced to absorb whichever way the
+hands-on verification landed, and it did its job: adapting to the §8 result is
+a matter of which providers exist and in what priority order, not a redesign.
 
 ```oxygene
 type
@@ -479,7 +507,8 @@ type
   end;
 
   NullabilitySource = public enum (
-    ExplicitAttribute,      // NullableAttribute etc. found directly
+    SourceTokenScan,        // nullable / not nullable token found in Oxygene source (primary path, §8)
+    ExplicitAttribute,      // NullableAttribute etc. found directly (C#/VB-authored dependencies)
     ContextAttribute,       // Inherited from NullableContextAttribute
     ValueTypeDefault,       // Inferred from the default rule for value types
     NoInformation           // No information at all; treated as Unknown
@@ -494,34 +523,73 @@ type
   end;
 ```
 
-- **Built-in provider 1: `RoslynStyleAttributeProvider`**: Interprets the standard
-  `NullableAttribute`/`NullableContextAttribute`. Expected to cover both
-  assemblies produced by C#/VB and Oxygene assemblies, provided Echoes follows
-  the same convention.
-- **Built-in provider 2: `ValueTypeDefaultProvider`**: A conservative fallback
-  rule for when no attributes are present at all — value types are treated as
-  non-nullable, reference types as "no information = Unknown" (Unknown can either
-  be leaned toward safety in `.d.ts` as `T | null | undefined`, or configured to
-  be treated as non-null, depending on settings).
-- **Extension point**: This abstraction is provided from the start so that, if
-  Phase 2's hands-on verification turns up an Oxygene-specific attribute, support
-  can be added simply by adding an `OxygeneNativeNullabilityProvider`.
+Provider lineup, in priority order:
+
+- **Provider 1 (primary): `OxygeneSourceScanProvider`** — a source-level token
+  scan of the project's own `.pas` files, built on the Elements SDK's official
+  tokenizer surface rather than hand-rolled lexing (`HANDOFF.md` §7). Per §8's
+  result this is not an optimization but **the only implementation that can
+  return anything other than Unknown for Oxygene-authored code**, which is why
+  the MVP shipped it from day one (`HANDOFF.md` §11) rather than deferring it
+  as this section's original text implied. As built
+  (`src/Tsgen/Nrt/NullabilityScanner.pas`, `HANDOFF.md` §12): an explicitly
+  heuristic scanner — not a full parser — scoped to properties and fields of
+  top-level types, using `RemObjects.Elements.Oxygene.SimpleTokenizer` with
+  token-ID constants referenced directly off
+  `RemObjects.Elements.Code.Oxygene.Token` (`HANDOFF.md` §13). Known
+  limitations (nested types, indexer-style properties; method parameter/return
+  NRT deliberately deferred as it doesn't affect the Inertia Page Props shape)
+  are catalogued in `HANDOFF.md` §12.6/§13. Requiring source access adds a
+  `--source <dir>` CLI input alongside `--assembly` — an input the original
+  reflection-only design did not need.
+- **Provider 2: `RoslynStyleAttributeProvider`** — interprets the standard
+  `NullableAttribute`/`NullableContextAttribute`. **Demoted from its original
+  "expected to also cover Oxygene assemblies" role**: per §8 it returns Unknown
+  for everything Oxygene wrote, so its remaining value is C#/VB-authored
+  dependency assemblies loaded alongside the target. Not yet implemented
+  (post-MVP).
+- **Provider 3: `ValueTypeDefaultProvider`** — unchanged conservative fallback:
+  value types non-nullable, reference types "no information = Unknown."
+- **Open slot: `MetadataFxProvider`** — reserved for the unconfirmed
+  metadata.fx lead (§4.1); if confirmed, it would slot in ahead of (or replace)
+  Provider 1 for assemblies whose sources are unavailable.
+
+**Implementation status (as of `HANDOFF.md` §13):** the MVP wires the scanner's
+result dictionary directly into the IR builder rather than through the
+`INullabilityProvider` interface — the chain abstraction remains the target
+shape but is deferred as new scope, not abandoned (`HANDOFF.md` §13, deferral
+item 4). The IR does already carry the tri-state result
+(`Unknown`/`IsNullable`/`IsNotNullable`) unresolved all the way to the emitter,
+which is the data-model prerequisite for both the provider chain and the
+`mark-unknown` policy discussed below.
 
 ### 4.3 Why This Design
 
-- This follows the principle that "analysis logic depending on an uncertain
-  external factor (a compiler's metadata output specification) should be pulled
-  out into a swappable provider." If `RoslynStyleAttributeProvider` alone were
-  hardcoded and it later turned out that Oxygene uses a different attribute, the
-  entire analysis logic would be at risk of needing a rewrite. With a provider
-  chain, support can be added with no more than an addition.
-- Why the Unknown state is treated as a first-class, explicit case: silently
-  collapsing "don't know" into "assume non-null" would generate TypeScript code
-  that throws a runtime error when null actually shows up (a safety gap).
-  Conversely, treating everything as nullable reduces how useful the types are.
-  Users can choose via `--nrt-unknown-policy` (tentative name: `assume-nullable` |
-  `assume-non-nullable` | `mark-unknown`), so the tool never makes an implicit
-  safety judgment on the user's behalf.
+- The original principle — "analysis logic depending on an uncertain external
+  factor (a compiler's metadata output specification) should be pulled out into
+  a swappable provider" — is now vindicated rather than hypothetical: the
+  verification outcome (§8) was the *worst* case the original text considered
+  (no metadata at all, not even a different attribute), and absorbing it still
+  required no redesign, only a change in which provider is primary. The same
+  reasoning is why the chain keeps an open slot for metadata.fx (§4.1) instead
+  of declaring the source scanner final.
+- Why the Unknown state is treated as a first-class, explicit case — and this
+  matters more after §8, not less: **for Oxygene-authored code seen through
+  reflection, Unknown is not a rare edge case but the constantly-occurring
+  default state** (`HANDOFF.md` §8.3). Two practical consequences:
+  - Meaningful NRT output requires `--source`; when it's omitted the CLI warns
+    that every member will fall back to the unknown-policy default rather than
+    silently degrading.
+  - Choosing an Unknown policy is a routine first-run decision, not an escape
+    hatch for exotic inputs.
+- Silently collapsing "don't know" into "assume non-null" would generate
+  TypeScript that throws at runtime when null actually shows up (a safety gap);
+  treating everything as nullable reduces how useful the types are. Users
+  choose via `--nrt-unknown-policy` (`assume-nullable` | `assume-non-nullable` |
+  `mark-unknown`), so the tool never makes an implicit safety judgment on the
+  user's behalf. The MVP implements the first two (as `nullable` | `non-null`);
+  `mark-unknown` is no longer blocked by the data model after the `HANDOFF.md`
+  §13 IR reshape, but is not yet wired up as a CLI option.
 
 ---
 
@@ -947,10 +1015,13 @@ As agreed at requirements-definition time, the following is the minimum bar:
   `string`/`number`/`boolean`/`Date`)
 - Enums (numeric or string literal union, selectable via configuration; a
   simplified version of §2.5)
-- Reflecting nullable reference types (the provider abstraction from §4 is put
-  in place, but the implementation starts with only the
-  `RoslynStyleAttributeProvider`-equivalent path, to be expanded once hands-on
-  verification results are in)
+- Reflecting nullable reference types (implementation starts with the
+  Tokenizer-based source scan, not the `RoslynStyleAttributeProvider`-first
+  path this bullet originally described — hands-on verification showed
+  reflection recovers nothing for Oxygene-authored code, making the source
+  scan the only viable first implementation; see §4 as revised and
+  `HANDOFF.md` §8/§11. The §4 provider-chain abstraction remains the target
+  shape but was not required for the initial cut)
 - `.d.ts` output following the namespace → ES module hierarchy (basic
   single-file/split-file toggle)
 - Minimal CLI shape (`tsgen generate --assembly X.dll --out ./dist`)
@@ -1008,9 +1079,15 @@ does not decide that ordering here — it is left as an open question (§11).
 Items to resolve before Phase 2 begins, or immediately after. Also documented in
 `HANDOFF.md`.
 
-1. **Whether the Oxygene compiler (Echoes) emits NRT information as
-   `NullableAttribute`/`NullableContextAttribute`** — requires hands-on
-   verification (§4.1).
+1. ~~Whether the Oxygene compiler (Echoes) emits NRT information as
+   `NullableAttribute`/`NullableContextAttribute`~~ **Resolved 2026-08-01 —
+   see `HANDOFF.md` §8: no. Echoes emits no NRT information into assembly
+   metadata at all** (no attributes, no custom modifiers, nothing
+   Oxygene-specific either), so source-level token scanning is the primary
+   path for Oxygene-authored code (§4, as revised). One related lead remains
+   open: an Elements-specific "metadata.fx" region hinted at by RemObjects
+   (`HANDOFF.md` §9.4) could yet restore a metadata-based path — unconfirmed,
+   tracked in §4.1.
 2. ~~The concrete execution environment for `System.Reflection`-equivalent APIs
    against Oxygene-built assemblies~~ **Resolved 2026-08-02 — see
    `HANDOFF.md` §10: yes, `System.Reflection.MetadataLoadContext` can be
