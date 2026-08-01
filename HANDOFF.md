@@ -266,7 +266,9 @@ beforehand (it falls back to PowerShell if not installed).
    Check whether something equivalent to
    `System.Reflection.MetadataLoadContext` can be used from Oxygene, and if
    not, identify alternatives (writing an ECMA-335 parser from scratch, or
-   researching existing libraries).
+   researching existing libraries). **Resolved 2026-08-02, see §10: yes, it
+   works** — but see §10 for an EBuild/NuGet packaging gap that must be
+   worked around.
 2.5. **【Cheap, recommended to do first】Check whether the locally installed
    Elements/Water SDK bundles a language-server binary or a hidden
    compiler flag for AST-dumping that the Fire/Water IDE's completion
@@ -652,3 +654,113 @@ conclusion as final until this is checked.** Two ways to follow up:
   `System.Reflection`).
 - Ask RemObjects directly what "metadata.fx" refers to, and whether/how
   it's readable from outside the compiler itself.
+
+---
+
+## 10. Task 2 results: verifying `MetadataLoadContext` usability from Oxygene/Echoes (Windows hands-on, 2026-08-02)
+
+**Conclusion (§4 item 2 resolved): `System.Reflection.MetadataLoadContext`
+is usable from Oxygene/Echoes code**, confirming that metadata-only
+assembly loading (the premise behind the whole design — "read only
+metadata from the target assembly without executing it") is technically
+viable as the implementation strategy for Stage 1 (Loader). A real,
+separate packaging gap was found along the way (see §10.2) that needs to
+be tracked before relying on NuGet runtime dependencies in Echoes/.NETCore
+executables generally, not just for this one package.
+
+### 10.1 Verification method
+
+1. Built a minimal Oxygene class library (`TargetLib`, `.NETStandard` /
+   `Mode=Echoes`) with one class exposing two properties and a method, to
+   act as the "target assembly" to be loaded as metadata only.
+2. Built a separate Oxygene console app (`Probe`, `TargetFramework=.NETCore`
+   / `Mode=Echoes`, `OutputType=Exe`) referencing the
+   `System.Reflection.MetadataLoadContext` NuGet package via a
+   `<NuGetReference Include="System.Reflection.MetadataLoadContext:8.0.0" />`
+   item (syntax confirmed from the official ASP.NET Core/React Water
+   project template, which is the only bundled sample using
+   `NuGetReference`).
+3. `Probe`'s `Main` builds a `PathAssemblyResolver` from the runtime
+   directory's DLLs (`RuntimeEnvironment.GetRuntimeDirectory()`) plus the
+   target assembly's path, opens a `MetadataLoadContext` in a `using`
+   block, calls `LoadFromAssemblyPath` on `TargetLib.dll`, and enumerates
+   `GetTypes()` / `GetMembers()` to confirm the metadata is readable.
+4. Both projects were built with `EBuild.exe /Configuration:Release` and
+   the resulting `Probe.exe` was run directly.
+
+### 10.2 Result and a packaging gap found along the way
+
+- The code **compiled without issue** — Oxygene has no trouble calling
+  into this .NET BCL-adjacent API surface (constructing
+  `PathAssemblyResolver`/`MetadataLoadContext`, generic `List<String>`,
+  `using` blocks, etc. all worked as expected).
+- **First run failed** with
+  `System.IO.FileNotFoundException: Could not load file or assembly
+  'System.Reflection.MetadataLoadContext, ...'`, even though the DLL was
+  physically present in the output directory after being copied there
+  manually. Root cause: EBuild's `NuGetReference` resolution silently
+  upgraded the requested package version (`8.0.0`) to `10.0.10` (matching
+  the installed .NET 10 SDK/runtime — the machine's installed shared
+  runtime is `Microsoft.NETCore.App 10.0.9`), but the generated
+  `Probe.deps.json` only recorded the package in the `dependencies` list
+  for the target — it **omitted the `"runtime"` asset entry** that tells
+  the .NET host which DLL file backs that dependency. Without that entry,
+  the CLR's trusted-platform-assembly list built from `deps.json` doesn't
+  include the file, so it isn't found even when sitting right next to the
+  `.exe`.
+- Confirmed as the actual root cause by manually patching
+  `Probe.deps.json` to add the missing
+  `"runtime": { "System.Reflection.MetadataLoadContext.dll": { ... } }`
+  entry under the package's target block — after that, `Probe.exe` ran
+  successfully:
+  ```
+  Loaded assembly: TargetLib, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null
+  Type: TargetLib.Sample
+    Member: Method get_Name
+    Member: Method set_Name
+    Member: Method get_Age
+    Member: Method set_Age
+    Member: Method Greet
+    Member: Constructor .ctor
+    Member: Property Name
+    Member: Property Age
+  MetadataLoadContext probe succeeded.
+  ```
+- **New open item (not yet investigated further): EBuild's `NuGetReference`
+  packaging for `Mode=Echoes` / `TargetFramework=.NETCore` executables
+  appears not to reliably populate `deps.json`'s runtime-asset entries for
+  NuGet-sourced dependencies.** This is a build-tooling risk distinct from
+  the original MetadataLoadContext question: it would affect *any* NuGet
+  package this tool ends up depending on at runtime (not just this one),
+  and needs a real fix (or at least a documented workaround — e.g. a
+  post-build `deps.json` patch step, or pinning to a package version that
+  doesn't trigger the auto-upgrade path) before Phase 2's CLI skeleton
+  leans on NuGet dependencies for anything executed at runtime. Whether
+  this reproduces with other packages, other target framework monikers, or
+  only with packages EBuild "upgrades" to a newer version than requested,
+  is unconfirmed — worth a quick recheck early in Phase 2 if/when the CLI
+  skeleton takes on its first real NuGet dependency.
+
+### 10.3 Artifacts
+
+The `TargetLib`/`Probe` test projects were built under this session's
+temp scratchpad directory, not under this repository — they were a
+disposable hands-on probe, not a repo fixture, and will not persist across
+sessions. If a reproducible regression check for this finding is wanted
+later, recreate it as a small fixture under `tests/fixtures/` per §4 item
+4 rather than assuming these files still exist.
+
+### 10.4 Impact on the design
+
+- `docs/DESIGN.md` §11 item 2 (the open question this task answered) can
+  be marked resolved: metadata-only loading via `MetadataLoadContext` is
+  the confirmed implementation path for Stage 1 (Loader), no ECMA-335
+  from-scratch parser or alternative library is needed for this part of
+  the design.
+- The NuGet/`deps.json` packaging gap in §10.2 is a new risk that
+  `docs/DESIGN.md` did not previously anticipate (the design assumed
+  standard .NET tooling behavior for dependency deployment). It doesn't
+  block starting §4 item 3 (CLI skeleton), but should be kept in mind once
+  the skeleton takes on any runtime NuGet dependency — verify the built
+  output actually runs, don't assume a successful `EBuild` compile implies
+  a correctly deployable output.

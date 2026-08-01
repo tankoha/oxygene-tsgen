@@ -924,11 +924,15 @@ Phase 2着手前、または着手直後に解決すべき事項。詳細は `HA
 
 1. **Oxygeneコンパイラ(Echoes)がNRT情報を`NullableAttribute`/
    `NullableContextAttribute`として出力するか** — 実機検証が必要 (§4.1)。
-2. **Oxygene製アセンブリに対する`System.Reflection`相当APIの具体的な実行環境**
-   — 本ツール自体をOxygeneで書く場合、対象アセンブリの読み込みに
-   `System.Reflection.MetadataLoadContext` (実行せずメタデータのみ読む標準機構)
-   がOxygene/Echoesから素直に使えるか、あるいは自前でECMA-335メタデータ
-   パーサを書く必要があるか、の技術検証。
+2. ~~Oxygene製アセンブリに対する`System.Reflection`相当APIの具体的な実行環境~~
+   **2026-08-02に解決 — `HANDOFF.md` §10参照: `System.Reflection.MetadataLoadContext`
+   はOxygene/Echoesから直接使え、対象アセンブリをメタデータのみで読み込める。
+   自前のECMA-335パーサは不要。** ただし検証の過程で別の未解決リスクが
+   見つかった: 今回必要としたNuGetパッケージについて、EBuildの
+   `NuGetReference`パッケージングが`deps.json`の実行時アセットエントリを
+   確実には反映しなかった。今後本ツールが実行時に依存することになる
+   NuGetパッケージは、コンパイルが通るだけでなく実際に動作することまで
+   確認すること (`HANDOFF.md` §10.2)。
 3. **Oxygeneのドキュメントコメント構文とXML doc出力の互換性** (§5.2)。
 4. **配布・パッケージング方式** — npm経由 (Node.jsバイナリ同梱 or npmラッパー)、
    単体バイナリ配布 (Elements/Islandでネイティブビルドする案も含む)、

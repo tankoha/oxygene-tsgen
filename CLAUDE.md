@@ -59,10 +59,23 @@ the official `RemObjects.Elements.Code.Oxygene.Tokenizer` class
 be revised to reflect this (tracked in `HANDOFF.md` §8.3) — don't assume
 the doc's current text matches this conclusion until that revision lands.
 
-The current top unverified technical risk instead: whether a
-`System.Reflection.MetadataLoadContext`-equivalent (metadata-only assembly
-loading) is usable directly from Oxygene/Echoes (`HANDOFF.md` §4 item 2 /
-`docs/DESIGN.md` §11 item 2) — not yet investigated hands-on.
+**Resolved 2026-08-02** (hands-on verification, see `HANDOFF.md` §10):
+`System.Reflection.MetadataLoadContext` **is** usable directly from
+Oxygene/Echoes (`HANDOFF.md` §4 item 2 / `docs/DESIGN.md` §11 item 2) —
+metadata-only assembly loading for Stage 1 (Loader) is confirmed
+technically viable, no custom ECMA-335 parser needed.
+
+A separate, unrelated risk surfaced during that verification: EBuild's
+`NuGetReference` packaging did not reliably populate `deps.json`'s
+runtime-asset entries for the NuGet package the test required (compiled
+fine, failed to run until `deps.json` was hand-patched). Before Phase 2's
+CLI skeleton takes on any NuGet package as a runtime dependency, verify
+the built output actually runs — don't assume a successful `EBuild`
+compile implies correctly deployable output (`HANDOFF.md` §10.2).
+
+No other unverified technical risk currently blocks starting §4 item 3
+(minimal CLI skeleton + MVP implementation) — see `HANDOFF.md` §4 for the
+full Phase 2 task priority order.
 
 ## License constraints
 

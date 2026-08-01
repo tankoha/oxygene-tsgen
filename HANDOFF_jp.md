@@ -220,6 +220,8 @@ Codeタブのローカルセッションはサンドボックス化されてお�
 2. **アセンブリのメタデータ読み込み方式の技術検証。**
    `System.Reflection.MetadataLoadContext` 相当がOxygeneから使えるかを確認し、
    使えない場合の代替 (ECMA-335パーサ自作 or 既存ライブラリ調査) を洗い出す。
+   **2026-08-02に解決、§10参照: 使える** — ただし§10で見つかった
+   EBuild/NuGetのパッケージング上の穴への対処が必要。
 2.5. **【安価・先出し推奨】ローカルにインストール済みのElements/Water SDK内に、
    Fire/WaterのIDE補完機能が内部で使っている言語サーバーバイナリや
    AST-dump用の隠しコンパイラフラグが同梱されていないか確認する。**
@@ -558,3 +560,112 @@ Personal/Academicライセンスを取得するまでは実行できない。ソ
   を確認する。
 - RemObjectsに直接、"metadata.fx"が具体的に何を指すか、コンパイラの
   外部から読み取り可能か (可能ならどうやって) を聞き返す。
+
+---
+
+## 10. タスク2の結果: Oxygene/Echoesから`MetadataLoadContext`が使えるかの
+    実機検証 (Windows実機、2026-08-02)
+
+**結論 (§4項目2は解決): `System.Reflection.MetadataLoadContext`は
+Oxygene/Echoeから使用可能**。これにより、設計全体の前提である「対象
+アセンブリのメタデータのみを実行せずに読み込む」というStage 1
+(Loader) の実装方針が技術的に成立することが確認できた。検証の過程で、
+これとは別の実在するパッケージング上の穴 (§10.2参照) も見つかった —
+このパッケージ1つに限らず、Echoes/.NETCore実行ファイルがNuGetの
+実行時依存関係全般に頼る際に注意すべき点として記録しておく。
+
+### 10.1 検証方法
+
+1. 最小限のOxygeneクラスライブラリ (`TargetLib`、`.NETStandard` /
+   `Mode=Echoes`) を作成。プロパティ2つとメソッド1つを持つクラスを1つ
+   置き、「メタデータのみで読み込む対象アセンブリ」の役とした。
+2. 別途、Oxygeneコンソールアプリ (`Probe`、`TargetFramework=.NETCore` /
+   `Mode=Echoes`、`OutputType=Exe`) を作成し、
+   `<NuGetReference Include="System.Reflection.MetadataLoadContext:8.0.0" />`
+   という項目で`System.Reflection.MetadataLoadContext` NuGetパッケージを
+   参照した (この構文は、`NuGetReference`を使っている唯一の同梱サンプルである
+   公式ASP.NET Core/React用Waterプロジェクトテンプレートから確認した)。
+3. `Probe`の`Main`は、ランタイムディレクトリ内のDLL一覧
+   (`RuntimeEnvironment.GetRuntimeDirectory()`) と対象アセンブリのパスから
+   `PathAssemblyResolver`を組み立て、`using`ブロックで`MetadataLoadContext`
+   を開き、`TargetLib.dll`に対して`LoadFromAssemblyPath`を呼び、
+   `GetTypes()` / `GetMembers()`でメタデータが読み取れることを確認する。
+4. 両プロジェクトとも`EBuild.exe /Configuration:Release`でビルドし、
+   生成された`Probe.exe`を直接実行した。
+
+### 10.2 結果と、途中で見つかったパッケージング上の穴
+
+- コードは**問題なくコンパイルできた** — `PathAssemblyResolver`/
+  `MetadataLoadContext`の構築、ジェネリックの`List<String>`、`using`
+  ブロックなど、この.NET BCL隣接のAPI群をOxygeneから呼び出すことに
+  支障はなかった。
+- **初回実行は失敗した**。DLLを手動で出力ディレクトリにコピーして
+  物理的に存在させていたにもかかわらず、
+  `System.IO.FileNotFoundException: Could not load file or assembly
+  'System.Reflection.MetadataLoadContext, ...'`というエラーになった。
+  根本原因: EBuildの`NuGetReference`解決が、要求したパッケージバージョン
+  (`8.0.0`) を暗黙に`10.0.10`へ引き上げていた (インストール済みの.NET
+  10 SDK/ランタイムに合わせたもの — このマシンにインストールされている
+  共有ランタイムは`Microsoft.NETCore.App 10.0.9`)。しかし生成された
+  `Probe.deps.json`は、そのターゲット向けの`dependencies`一覧に
+  パッケージ名を記録しただけで、**どのDLLファイルがその依存を実体として
+  提供するかを示す`"runtime"`アセットエントリを欠いていた**。この
+  エントリがないと、`deps.json`から構築されるCLRの信頼済みプラット
+  フォームアセンブリ一覧にそのファイルが含まれず、`.exe`のすぐ隣に
+  置いてあっても見つからない。
+- `Probe.deps.json`を手動でパッチし、パッケージのターゲットブロック下に
+  欠けていた`"runtime": { "System.Reflection.MetadataLoadContext.dll": { ... } }`
+  エントリを追加したところ、`Probe.exe`が正常に実行できることを確認し、
+  これが実際の根本原因であると裏付けが取れた:
+  ```
+  Loaded assembly: TargetLib, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null
+  Type: TargetLib.Sample
+    Member: Method get_Name
+    Member: Method set_Name
+    Member: Method get_Age
+    Member: Method set_Age
+    Member: Method Greet
+    Member: Constructor .ctor
+    Member: Property Name
+    Member: Property Age
+  MetadataLoadContext probe succeeded.
+  ```
+- **新たな未調査事項 (これ以上は未調査): `Mode=Echoes` /
+  `TargetFramework=.NETCore`の実行ファイルにおいて、EBuildの
+  `NuGetReference`パッケージングがNuGet由来の依存関係の実行時アセット
+  エントリを`deps.json`へ確実には反映しないように見える。** これは
+  元々のMetadataLoadContextの疑問とは別の、ビルドツールチェーン側の
+  リスクである。このパッケージ1つに限らず、本ツールが実行時に依存する
+  ことになる*あらゆる*NuGetパッケージに影響しうるため、Phase 2のCLI
+  スケルトンが実行時に使うNuGet依存関係を初めて持つ前に、実際の修正
+  (または少なくとも文書化された回避策 — 例: ビルド後の`deps.json`
+  パッチ工程、あるいは自動アップグレードの経路を踏まないパッケージ
+  バージョンへの固定など) が必要である。これが他のパッケージ、他の
+  ターゲットフレームワーク・モニカーでも再現するか、あるいは
+  「EBuildが要求より新しいバージョンへ『アップグレード』したパッケージ」
+  に限って起きるのかは未確認 — Phase 2でCLIスケルトンが最初の実際の
+  NuGet依存関係を持つタイミングで、早めに再確認する価値がある。
+
+### 10.3 成果物について
+
+`TargetLib`/`Probe`の検証用プロジェクトは、このセッションのTemp
+スクラッチパッド配下でビルドしたものであり、本リポジトリ配下では
+ない — 使い捨てのハンズオン検証であって、リポジトリのフィクスチャ
+ではなく、セッションをまたいで残ることはない。この結果の再現確認を
+後で行いたい場合は、これらのファイルがまだ存在すると仮定せず、§4
+項目4に沿って`tests/fixtures/`配下に小さなフィクスチャとして作り
+直すこと。
+
+### 10.4 設計への影響
+
+- `docs/DESIGN.md` §11項目2 (今回のタスクが答えた未決事項) は解決済みと
+  してよい: メタデータのみの読み込みを`MetadataLoadContext`経由で行う
+  ことが、Stage 1 (Loader) の確定した実装方針であり、この部分について
+  ECMA-335パーサの自作や代替ライブラリは不要である。
+- §10.2のNuGet/`deps.json`パッケージングの穴は、`docs/DESIGN.md`が
+  これまで想定していなかった新しいリスクである (設計は依存関係の
+  デプロイについて標準的な.NETツールチェーンの挙動を前提としていた)。
+  §4項目3 (CLIスケルトン) の着手を妨げるものではないが、スケルトンが
+  何らかの実行時NuGet依存関係を持つようになった時点で念頭に置くこと —
+  `EBuild`のコンパイルが成功したからといって、正しくデプロイ可能な
+  出力になっているとは限らないので、確認すること。

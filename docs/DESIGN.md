@@ -1011,13 +1011,16 @@ Items to resolve before Phase 2 begins, or immediately after. Also documented in
 1. **Whether the Oxygene compiler (Echoes) emits NRT information as
    `NullableAttribute`/`NullableContextAttribute`** — requires hands-on
    verification (§4.1).
-2. **The concrete execution environment for `System.Reflection`-equivalent APIs
-   against Oxygene-built assemblies** — if this tool itself is written in
-   Oxygene, technical verification is needed on whether
-   `System.Reflection.MetadataLoadContext` (the standard mechanism for reading
-   metadata only, without executing the assembly) can be used directly from
-   Oxygene/Echoes for loading the target assembly, or whether a custom ECMA-335
-   metadata parser needs to be written.
+2. ~~The concrete execution environment for `System.Reflection`-equivalent APIs
+   against Oxygene-built assemblies~~ **Resolved 2026-08-02 — see
+   `HANDOFF.md` §10: yes, `System.Reflection.MetadataLoadContext` can be
+   used directly from Oxygene/Echoes to load a target assembly as metadata
+   only, with no need for a custom ECMA-335 parser.** A separate,
+   unresolved risk was found along the way: EBuild's `NuGetReference`
+   packaging did not reliably populate `deps.json`'s runtime-asset entries
+   for the NuGet package this required, so any NuGet runtime dependency
+   this tool takes on later should be verified to actually run, not just
+   compile (`HANDOFF.md` §10.2).
 3. **Compatibility between Oxygene's documentation-comment syntax and XML doc
    output** (§5.2).
 4. **Distribution/packaging approach** — comparing distribution via npm
