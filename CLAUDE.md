@@ -77,6 +77,38 @@ No other unverified technical risk currently blocks starting §4 item 3
 (minimal CLI skeleton + MVP implementation) — see `HANDOFF.md` §4 for the
 full Phase 2 task priority order.
 
+## Model selection for implementation work (Phase 2+)
+
+- **Default: Sonnet 5** for the bulk of implementation, matching the
+  Phase 1 (Fable5, design) → Phase 2 (Sonnet, implementation) handoff
+  intent already stated at the top of `HANDOFF.md`. Oxygene is a niche
+  language with sparse training data, so even boilerplate-looking code
+  benefits from a stronger model — don't reflexively downgrade a task
+  just because it looks mechanical.
+- **Fable 5**: bring back for design-level judgment calls, not code — e.g.
+  finalizing the "lightweight IR" scope left open in `HANDOFF.md` §2.1, or
+  the still-pending `docs/DESIGN.md` §4 rewrite to reflect the NRT
+  findings (`HANDOFF.md` §8.3).
+- **Opus 5**: worth considering (via the `Agent` tool's `model` override)
+  for algorithmically hard, bug-costly cores where reasoning depth matters
+  more than breadth — Tarjan SCC cycle detection, the Tokenizer-based
+  NRT/`Inertia.Render` scanner (see the multi-line/generics/alias fragility
+  concerns in `HANDOFF.md` §2.9), and type-mapping-chain/generics
+  interactions.
+- **Haiku 4.5**: only for narrow, already-templated repetition done under
+  review — e.g. replicating a type-mapping rule after the first instance
+  is written by a stronger model. Given Oxygene's rarity in training data,
+  the review overhead can outweigh the savings on a project this size;
+  don't force it just to save cost.
+- **Practical note:** switching this conversation's own model is a
+  user-side choice made at session start, not something Claude can do
+  mid-turn. The `Agent` tool's `model` parameter (`sonnet`/`opus`/`haiku`/
+  `fable`) can delegate a self-contained, fully-specified subtask to a
+  different model, but each such agent starts without this conversation's
+  context — suited to isolated, spec-complete chunks of work, not
+  interactive build/debug loops like the EBuild round-trips in
+  `HANDOFF.md` §10.
+
 ## License constraints
 
 The Elements install used for this project is a **Trial** license,
