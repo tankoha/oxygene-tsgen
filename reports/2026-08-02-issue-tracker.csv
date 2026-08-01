@@ -1,0 +1,25 @@
+No.,発見フェーズ#,発見フェーズ名,発見元,カテゴリ,重要度,内容,発見箇所,対応状況,解決フェーズ#,解決フェーズ名,対応内容
+1,1,Task2: MetadataLoadContext検証,自己(実装中),ツール不具合(EBuild),高,"NuGetReferenceで解決したパッケージが自動アップグレードされるが、deps.jsonにruntimeエントリが登録されず実行時にFileNotFoundException",Probeプロジェクト(MetadataLoadContext検証),回避策あり,3,Task3実装: 初回実装+dev-build.ps1,手動deps.jsonパッチで確認後、tools/dev-build.ps1に定式化
+2,2,Task3準備: Tokenizer調査,自己(実装中),ツール不具合(EBuild),高,同じdeps.jsonの穴がローカルのReference/HintPath参照でも再現。NuGet固有ではなくEBuild全般の問題と判明,TokenizerProbeプロジェクト,回避策あり,3,Task3実装: 初回実装+dev-build.ps1,dev-build.ps1に統合(RemObjects.Elements*.dllもコピー+パッチ対象に)
+3,2,Task3準備: Tokenizer調査,自己(実装中),API仕様不明点(未文書化),中,SimpleTokenizer.Parseは呼ぶたびに常に先頭トークンのみを返す仕様だった(同じ文字列を渡しても進まない),トークナイザ調査(TokenizerProbe),修正済み,2,Task3準備: Tokenizer調査,縮小する部分文字列を渡し直すループ方式で回避
+4,2,Task3準備: Tokenizer調査,自己(実装中),API仕様不明点/バグ(サードパーティ),高,末尾の孤立した'.'を渡すとSimpleTokenizer内部でOOMクラッシュ,トークナイザ調査(TokenizerProbe),修正済み,2,Task3準備: Tokenizer調査,Parse呼び出し前にtrimチェックするガードを追加
+5,3,Task3実装: 初回実装+dev-build.ps1,自己(ビルドエラー),実装バグ(構文),中,nullable/property/namespaceなどOxygeneの予約語を自分のenumメンバー/フィールド名に使ってしまいコンパイルエラー,RawModel.pas / IrModel.pas / NullabilityScanner.pas,修正済み,3,Task3実装: 初回実装+dev-build.ps1,PropertyMember、IsNullable/IsNotNullable、NamespaceName等にリネーム
+6,3,Task3実装: 初回実装+dev-build.ps1,自己(コンパイル警告),実装バグ(軽微),低,変数名enumStyleとenum型名EnumStyleの大文字小文字違いによる警告,Program.pas,修正済み,3,Task3実装: 初回実装+dev-build.ps1,変数名をchosenEnumStyleにリネーム
+7,3,Task3実装: 初回実装+dev-build.ps1,自己(ビルドエラー),仕様(既知の再確認),低,not nullableなフィールド/プロパティは宣言時の初期化が必須(read writeの後に:=を置く必要),SampleModel.pas,修正済み,3,Task3実装: 初回実装+dev-build.ps1,フィクスチャにデフォルト値を追加
+8,4,Fable5レビュー1回目,Fable5,設計上の問題,高,IrMemberLiteがTsType(文字列)とIsNullable(bool)を事前解決済みで保持しており、Stage3がStage2に混入。循環参照検出/ジェネリクス対応を阻害,IrModel.pas / IrBuilder.pas,修正済み,5,修正対応1,ClrTypeName+三値Nullabilityに変更し、型マッピング/ポリシー適用をDtsEmitterに移動
+9,4,Fable5レビュー1回目,Fable5,設計上の問題,中,INullabilityProviderの抽象化seamが未実装(チェーン構造がない),IrBuilder.pas,先送り,,,IR再構成で配線しやすくなったが実装自体は新規スコープとして保留
+10,4,Fable5レビュー1回目,Fable5,設計上の問題,中,--nrt-unknown-policyの3つ目(mark-unknown)が未実装。IRが事前解決していたため実現不可だった,設計全体,先送り,,,IR再構成でブロックは解消したが配線自体は未実施
+11,4,Fable5レビュー1回目,Fable5,実装バグ(サイレント失敗),中,--source省略時に無警告で全メンバーがUnknown扱いになることが伝わらない,Program.pas,修正済み,5,修正対応1,--source省略時に警告メッセージを追加
+12,4,Fable5レビュー1回目,Fable5,実装上のリスク,中,トークンIDがマジックナンバーでハードコードされており、Elementsのバージョンアップでサイレントに壊れるリスク,NullabilityScanner.pas,修正済み,5,修正対応1,Tokenクラスの公開staticフィールドを直接参照する形に変更
+13,4,Fable5レビュー1回目,Fable5,実装バグ(実バグ),高,"""A, B: nullable String;"" のような複数識別子宣言で、コロン直前以外の名前が無言でUnknown扱いになる",NullabilityScanner.pas,修正済み,5,修正対応1,カンマ区切り識別子リストを収集して全てに適用する分岐を追加。回帰テストケースも追加
+14,4,Fable5レビュー1回目,Fable5,ドキュメント/コメント不正確,低,ネストした型に関するコメントが「innermost wins」と書いてあったが実際は逆(outer wins)だった,NullabilityScanner.pas,修正済み,5,修正対応1,コメントを実際の挙動に合わせて修正(挙動自体は不変)
+15,4,Fable5レビュー1回目,Fable5,実装バグ(設計方針違反),中,未マッピング型のフォールバックが'any'で型チェックを無効化。DESIGN.md §2.4の方針(unknown)と矛盾,TypeMapper.pas,修正済み,5,修正対応1,'unknown'に変更し、DtsEmitterで警告を出すように変更
+16,4,Fable5レビュー1回目,Fable5,運用リスク(ライセンス),低,.gitignoreのbin/がcase-sensitive環境でBin/にマッチしない可能性,.gitignore,修正済み,5,修正対応1,[Bb]in/、[Oo]bj/、*.deps.json等のパターンを追加
+17,4,Fable5レビュー1回目,Fable5,実装上のリスク,低,IsTypeOpenのルックバック上限(8トークン)が小さすぎ、長い修飾子チェーンで検出漏れの可能性,NullabilityScanner.pas,修正済み,5,修正対応1,上限を8から64に緩和
+18,4,Fable5レビュー1回目,Fable5,実装バグ(サイレント失敗),中,AssemblyLoaderが非public/nested/genericな型を無言で除外し、ユーザーに伝わらない,AssemblyLoader.pas,修正済み,5,修正対応1,スキップ件数をカウントし警告を出力
+19,4,Fable5レビュー1回目,Fable5,運用リスク(ライセンス),高,Trial版3日間使用上限の確認が未解決のまま、継続的にEBuildを使い続けている,ライセンス全体(HANDOFF §9.2),未対応,,,ベンダー確認またはライセンス購入が必要(コード対応では解決しない)
+20,4,Fable5レビュー1回目,Fable5,ドキュメント負債,中,DESIGN.md §4/§10.1/§11が実機検証結果と乖離し、3箇所で状態が分散,docs/DESIGN.md,修正済み,7,DESIGN.md §4書き直し,§4を全面書き直し、§10.1/§11項目1も同様に更新(Fable5に依頼)
+21,6,Fable5レビュー2回目(検証),Fable5,対応漏れ,中,「RemObjectsへのdeps.json不具合報告」が「対応済み」にも「あえてやらない」リストにも入らず欠落,HANDOFF.md §13,修正済み,6,Fable5レビュー2回目(検証),先送りリストに明示的に追記
+22,6,Fable5レビュー2回目(検証),Fable5,設計上の副作用,低,警告出力のためDtsEmitter.Emitが純粋関数でなくなった。将来のDiagnostics実装時に要対応,DtsEmitter.pas,先送り,,,Diagnosticsコンポーネント実装時にstderr化+重複排除を検討
+23,6,Fable5レビュー2回目(検証),Fable5,ドキュメント表現,低,「スナップショットテストを先にやるという助言はもう意味がない」という誤解を招く表現,HANDOFF.md §13,修正済み,6,Fable5レビュー2回目(検証),「今回はたまたま切り抜けただけ」という文言に修正
+24,6,Fable5レビュー2回目(検証),Fable5,検証範囲の限界,低,日英ドキュメントの同期はスポットチェックのみで全行監査ではない旨の注記,HANDOFF_jp.md,未対応,,,参考情報として記録のみ。必要に応じて全行監査を実施
