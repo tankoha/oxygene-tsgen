@@ -172,7 +172,11 @@ confirmed directly with RemObjects by email (2026-08-01 — see
   Exact meaning unconfirmed as of 2026-08-01 (calendar days since install?
   cumulative days of use? evaluation sessions?) — see `HANDOFF.md` §9.2.
   Don't assume extended Trial access is available for Phase 2 work
-  without checking this first.
+  without checking this first. A follow-up asking the vendor to confirm
+  whether "3 days" was a typo for "30 days" was sent 2026-08-02
+  (`HANDOFF.md` §17 item 2); no reply yet as of that writing. Check
+  `HANDOFF.md` §9.2/§17 for the current answer before treating the 3-day
+  figure as settled.
 
 ## Documentation conventions
 

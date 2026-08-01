@@ -619,6 +619,17 @@ should be budgeted for) before relying on extended Trial use through
 Phase 2. Follow up before starting item 3 in §4 (MVP implementation) if
 the 3-day window is at risk of expiring.
 
+**Update (2026-08-02): follow-up sent, awaiting reply.** Emailed Marc
+directly (same contact/thread as the original §9.1 exchange) asking him
+to confirm whether "3 days" was a typo for "30 days" — the user had
+independently expected a 30-day trial and wanted that checked before
+trusting the 3-day reading. Not yet confirmed either way as of this
+writing; by the time Phase 2 had already reached §16 (well past the
+"before item 3" trigger point above) without a reply, so in practice
+Trial use continued without waiting on this answer. Update this section
+once Marc replies — if it *is* 30 days, the urgency behind issue-tracker
+item #19 (`reports/2026-08-02-issue-tracker.csv`) drops substantially.
+
 ### 9.3 Impact on §11 item 4 (Distribution/packaging approach)
 
 The "Distribution/packaging approach" open question must now be decided
@@ -1080,15 +1091,13 @@ order the review suggested):
    task; needs a vendor follow-up or a license purchase decision, and the
    review flagged it as increasingly urgent given how much sustained
    EBuild use Phase 2 is now doing.
-7. **Reporting the `deps.json` runtime-asset gap (§10.2/§12.3) to
-   RemObjects.** This was on the original review's "shouldn't wait"
-   list alongside the `.gitignore` fix, but fell through the cracks of
-   this section on the first pass -- a follow-up verification review
-   caught the omission. RemObjects has already been responsive by email
-   once (§9), and Elements ships weekly, so a real upstream fix is
-   plausibly obtainable; every session this stays unreported extends how
-   entrenched `tools/dev-build.ps1`'s workaround becomes. Send the report
-   before the next implementation session, not after.
+7. ~~Reporting the `deps.json` runtime-asset gap (§10.2/§12.3) to
+   RemObjects.~~ **Done 2026-08-02, see §17.** This was on the original
+   review's "shouldn't wait" list alongside the `.gitignore` fix, but
+   fell through the cracks of this section on the first pass -- a
+   follow-up verification review caught the omission. RemObjects has
+   already been responsive by email once (§9), and Elements ships
+   weekly, so a real upstream fix is plausibly obtainable.
 
 ---
 
@@ -1392,3 +1401,42 @@ types under one `type` section, and indexer-style property parameter
 lists are still unhandled, and `ScanFile` is still a depth-counter
 heuristic rather than a parser. Those now have a snapshot net under them,
 so they're a safer thing to attack next than they were before §15.
+
+---
+
+## 17. Two vendor follow-ups sent to RemObjects (2026-08-02)
+
+Both non-code items §13 flagged as overdue were sent this session, as
+separate, independent inquiries rather than bundled into one email —
+the `deps.json` bug is an engineering/EBuild issue, while the trial-length
+question is a licensing/sales issue, and the two are unlikely to be
+triaged by the same person on RemObjects' side. Bundling them under a
+"following up on our earlier exchange" framing would also have meant
+whoever picked up the generic support inbox had no visibility into that
+earlier thread's context, for no benefit.
+
+1. **`deps.json` runtime-asset gap (§10.2/§12.3/§16.1), §13 item 7.**
+   Sent as a fresh, standalone bug report to `support@remobjects.com`
+   (not a reply to the §9 thread). Covers: repro steps (`NuGetReference`
+   silently upgraded to a newer installed version, resulting
+   `deps.json` missing the `"runtime"` asset entry under the target
+   block), root-cause confirmation (manually patching in the missing
+   entry fixes it), the finding that it reproduces identically for a
+   plain local `Reference`/`HintPath` too (so it's not NuGet-specific),
+   environment details (Elements 13.0.0.3101, .NET 10 SDK/runtime), and
+   a note that a `talk.remobjects.com` search turned up related-looking
+   but non-matching older threads (18830, 18544, 19464, 27688) so
+   RemObjects can judge duplicate-vs-new themselves. Offered to share
+   `tools/dev-build.ps1`'s workaround as a regression-test seed if
+   useful. No reply yet as of this writing.
+
+2. **§9.2 trial-length question.** The user separately emailed Marc
+   directly (continuing the §9.1 thread) asking whether the "3 days"
+   figure from the original reply was a typo for "30 days" — the user
+   had expected a 30-day trial going in. See §9.2's updated note for the
+   current status; not yet confirmed either way. If it turns out to be
+   30 days, issue-tracker item #19 (`reports/2026-08-02-issue-tracker.csv`)
+   and this file's own repeated "confirm before relying on extended
+   Trial use" warnings (§4 task list, §9.3) lose most of their urgency
+   — worth revisiting once Marc replies, rather than continuing to
+   carry this as a high-severity open item by default.
