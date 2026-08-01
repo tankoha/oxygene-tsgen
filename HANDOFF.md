@@ -764,3 +764,328 @@ later, recreate it as a small fixture under `tests/fixtures/` per §4 item
   the skeleton takes on any runtime NuGet dependency — verify the built
   output actually runs, don't assume a successful `EBuild` compile implies
   a correctly deployable output.
+
+---
+
+## 11. Phase 2 kickoff: MVP scope decisions (2026-08-02)
+
+Before writing `src/` code for §4 item 3, the following scope calls were
+made (user-confirmed where flagged as a real fork; the rest are
+implementation-detail defaults, documented here rather than silently
+decided). A full write-up of what was actually built follows in §12.
+
+- **NRT in the MVP uses the Tokenizer-based source scan from day one**,
+  not the reflection-stub-only path `docs/DESIGN.md` §10.1 originally
+  described. User-confirmed: this properly follows through on §8.3's
+  conclusion instead of shipping an MVP where nullability is always
+  `Unknown` for every Oxygene-authored type. Consequence: the CLI needs a
+  new `--source <dir>` input beyond the `--assembly`/`--out` shape
+  `docs/DESIGN.md` §10.1 originally sketched.
+- **NRT scanner scope: properties and fields only for MVP.** Method
+  parameter/return-value nullability (also covered by the §8 hands-on
+  verification) is deferred — it doesn't affect the Inertia Page Props
+  shape (§6), which is what actually gets serialized.
+- **Output mode: single-file `.d.ts` only for MVP** (one file with nested
+  `declare namespace` blocks matching .NET namespaces). The split-file /
+  ES-module layout `docs/DESIGN.md` §7.3 also describes is deferred.
+- **Type mapping: a hard-coded primitive/enum mapping function stands in
+  for Stage 3 in the MVP**, not the full pluggable `ITypeMappingRule`
+  chain — matches `docs/DESIGN.md` §10.2 already placing the plugin
+  mechanism near the end of the post-MVP list.
+- **Enum strategy: both numeric and string-literal-union are implemented**
+  behind a `--enum-style` flag (cheap to do since it's a small branch in
+  the emitter, so no reason to cut it down to just one from §10.1's
+  "selectable via configuration" wording).
+- These decisions keep §4 item 3 (this task) scoped to: Stage 1 Loader
+  (reflection via `MetadataLoadContext`, per §10) + a
+  properties/fields-only Tokenizer NRT scan + a lightweight Stage 2 IR +
+  Stage 4 single-file `DtsEmitter`. Cycle detection, generics, split-file
+  output, the plugin chain, and method-level NRT all remain post-MVP per
+  `docs/DESIGN.md` §10.2.
+
+---
+
+## 12. Task 3 results: MVP implementation (`src/Tsgen`), Windows hands-on, 2026-08-02
+
+**§4 item 3 is done.** `src/Tsgen` is a working CLI
+(`tsgen generate --assembly <dll> --source <dir> --out <dir>`) that loads
+an Oxygene-built assembly via `MetadataLoadContext` (§10), scans its
+source for `nullable`/`not nullable` via a real Oxygene tokenizer, builds
+a lightweight IR, and emits a single-file `.d.ts`. Verified end-to-end
+against `tests/fixtures/SampleModel` (see §12.5).
+
+### 12.1 Project layout
+
+```
+src/Tsgen/Tsgen.elements       -- Exe, Mode=Echoes, TargetFramework=.NETCore
+src/Tsgen/Loading/              -- Stage 1: RawModel.pas, AssemblyLoader.pas
+src/Tsgen/Nrt/                  -- NullabilityScanner.pas (Tokenizer-based scan)
+src/Tsgen/Ir/                   -- Stage 2: IrModel.pas, TypeMapper.pas, IrBuilder.pas
+src/Tsgen/Emit/                 -- Stage 4: DtsEmitter.pas
+src/Tsgen/Cli/Program.pas       -- argument parsing + pipeline wiring
+tools/dev-build.ps1             -- build + deps.json workaround, see §12.3
+tests/fixtures/SampleModel/     -- hands-on verification fixture, see §12.5
+```
+
+Single project for the MVP rather than splitting a library out from the
+CLI — not enough separate consumers yet to justify it; revisit if/when a
+second entry point (e.g. an MSBuild task or a watch-mode host) shows up.
+
+### 12.2 Finding a usable tokenizer entry point
+
+`HANDOFF.md` §7 identified `RemObjects.Elements.Code.Oxygene.Tokenizer`
+(constructor takes a `TokenStream`) as the official lexer, but its public
+surface turned out to be a raw incremental state machine (`Next()`,
+`CurrTokenID`, `Row`/`Col`, etc.) with no simple "tokenize this whole
+string" entry point — matching §7.2's warning that "a lightweight parser
+still needs to be layered on top." Reverse-engineering it via reflection
+(`ReflectionOnlyLoadFrom` + manually preloading its dependency chain --
+`RemObjects.Elements.dll`, `RemObjects.Elements.Code.dll` -- to work
+around `ReflectionOnlyAssemblyResolve` not being usable from a script)
+surfaced a friendlier alternative instead:
+
+- **`RemObjects.Elements.Oxygene.SimpleTokenizer`** — a public static
+  class with `Parse(text: String): Void` and `Items: List<TokenValue>`
+  (`TokenValue` = `{ Token: Int32, StartPos: Int32, Length: Int32 }`).
+  **Quirk found by hands-on probing (not documented anywhere found):**
+  `Parse` only ever returns the *first* token of whatever string it's
+  given -- calling it repeatedly on the same string does not advance.
+  The scanner therefore calls `Parse` on a shrinking substring in a loop,
+  re-deriving the absolute offset each time. This works, but a lone
+  trailing `.` with nothing after it (e.g. the final `end.` of a unit
+  with no trailing newline) makes some internal loop inside `Parse` spin
+  and the process dies with "Out of memory." -- `NullabilityScanner`
+  guards against this by checking `remaining.Trim() = '.'` (and
+  `Length = 0`) *before* calling `Parse`, not after. Any future rework of
+  this scanner should keep that guard or something equivalent.
+- **Token ID constants** live as public static `Int32` fields on
+  `RemObjects.Elements.Code.Oxygene.Token` (an abstract static-only
+  class, not an enum), e.g. `TI_class=208`, `TI_nullable=250`,
+  `TI_not=249`, `TI_property=259`, `TI_begin=205`, `TI_end=219`,
+  `T_Identifier=100`, `TINT_WhiteSpace=69`, `T_Colon=104`,
+  `T_SemiColon=110`, `T_OpenRound=105`, `T_CloseRound=106`, `T_Dot=103`.
+  Confirmed correct by cross-checking against `SimpleTokenizer`'s output
+  for a real snippet (see the sample dump in §12.5). The full field list
+  (277 entries) was not transcribed here — re-derive with
+  `ReflectionOnlyLoadFrom` + `GetFields(Public, Static)` on
+  `RemObjects.Elements.Oxygene.dll`'s `Token` class if more are needed
+  later (e.g. for method-level NRT, which will need `TI_method`,
+  parameter-list tokens, etc. -- already partly scoped out in §11).
+
+### 12.3 The `deps.json` gap recurs for local `Reference` items too, not just NuGet
+
+§10.2 found this for a `NuGetReference`; it also reproduces identically
+for a plain `<Reference Include="..."><HintPath>...</HintPath></Reference>`
+item (used here for `RemObjects.Elements(.Code/.Oxygene).dll`, per the
+license posture in `CLAUDE.md` -- `Private=False`, i.e. explicitly not
+copied into our own output). So this is a general EBuild gap for
+`Mode=Echoes` / `TargetFramework=.NETCore` **executables** with any
+reference beyond the base framework, not something specific to NuGet.
+
+**Workaround, formalized as `tools/dev-build.ps1`:** runs `EBuild.exe`,
+copies the four extra DLLs (`System.Reflection.MetadataLoadContext.dll`
+from EBuild's NuGet package cache, plus the three `RemObjects.Elements*`
+DLLs from the Elements install) into `Bin/Release`, then patches
+`tsgen.deps.json` (via `ConvertFrom-Json`/`ConvertTo-Json`) to add the
+missing `"runtime"` asset entries. Re-run this script after every build;
+a plain `EBuild.exe` build alone will compile fine and then fail at
+launch with `FileNotFoundException`, same as §10.2. The script hardcodes
+the current Elements version (`13.0.0.3101`) and assumes the `.NET 10`
+SDK is what's installed locally -- update
+`$RemObjectsElementsVersion` in the script if the local install changes.
+This is a dev-loop convenience script, not a fix for the underlying
+EBuild bug (still unreported to RemObjects, still unconfirmed whether it
+reproduces on other machines/SDKs).
+
+### 12.4 Other gotchas hit while writing the Oxygene source
+
+- **`nullable`, `property`, and `namespace` are reserved words** and
+  cannot be used as your own identifiers (enum members, field names) even
+  though they're exactly the words `NullabilityScanner` needs to detect
+  in *other* code. Renamed: `RawMemberKind.Property` →
+  `.PropertyMember`; `NullabilityKind.Nullable`/`.NotNullable` →
+  `.IsNullable`/`.IsNotNullable`; `RawType.Namespace`/`IrTypeLite.Namespace`
+  → `.NamespaceName`. Reading an *external* member already named
+  `Namespace` (e.g. `System.Type.Namespace` from reflection) compiles
+  fine -- the restriction is only on declaring your own identifier with
+  the bare reserved word, not on member access.
+- **Oxygene's `case` statement does not appear to support string
+  subjects** in the way C#'s `switch` does (only tried this for CLI flag
+  parsing and enum-string mapping; did not verify against official docs).
+  Used `if`/`else if` chains for anything switching on a `String` instead
+  of risking it; `case` on `Int32` token IDs (an ordinal type) works
+  fine and is used throughout the scanner.
+- **`not nullable` fields/properties must be initialized inline**,
+  confirmed again here (already known from §8.1): `property Id: not
+  nullable String read write := '';` -- the `:= <default>` goes *after*
+  `read write`, not before (`tests/fixtures/SampleModel/SampleModel.pas`).
+
+### 12.5 End-to-end verification
+
+Fixture: `tests/fixtures/SampleModel/SampleModel.pas` -- an enum
+(`Status`) and a class (`User`) with one `not nullable` property, one
+`nullable` property, and two properties with no NRT annotation at all
+(to exercise `--nrt-unknown-policy`).
+
+Command (after `tools/dev-build.ps1`):
+```
+tsgen generate --assembly tests/fixtures/SampleModel/Bin/Release/SampleModel.dll \
+               --source tests/fixtures/SampleModel \
+               --out tests/fixtures/SampleModel/dist
+```
+
+Output (`tests/fixtures/SampleModel/dist/index.d.ts`, default
+`--enum-style numeric --nrt-unknown-policy nullable`):
+```typescript
+declare namespace SampleModel {
+  export enum Status {
+    Active = 0,
+    Inactive = 1,
+    Pending = 2,
+  }
+  export interface User {
+    Id: string;
+    DisplayName: string | null;
+    Age: number | null;
+    IsAdmin: boolean | null;
+  }
+}
+```
+`Id` (explicit `not nullable`) has no `| null`; `DisplayName` (explicit
+`nullable`) does; `Age`/`IsAdmin` (no annotation -> `Unknown`) fall back
+to the `--nrt-unknown-policy` default (`nullable`). Re-running with
+`--enum-style union --nrt-unknown-policy non-null` correctly flipped the
+enum to a string-literal union and dropped `| null` from `Age`/`IsAdmin`
+only (not from `DisplayName`) -- confirms the policy only applies to
+genuinely `Unknown` members, not to explicitly-annotated ones.
+
+### 12.6 Known limitations / not done
+
+- **NRT scanner is a heuristic, not a real parser.** It tracks
+  `class`/`record`/`interface`/`begin`/`try`/`case` nesting with a single
+  depth counter plus a paren-depth counter to exclude method parameter
+  lists (§11 already scoped out method-level NRT) -- not validated
+  against nested types, multiple types under one `type` section, or
+  properties with indexer-style parameter lists. Harden with more
+  `tests/fixtures/` cases before relying on it for a real, larger
+  Oxygene/Inertia codebase.
+- Single-file `.d.ts` output only, hardcoded primitive/enum type mapping
+  in place of Stage 3's pluggable chain, no cycle detection, no generics
+  -- all per the §11 scope decisions and `docs/DESIGN.md` §10.2's
+  existing post-MVP ordering.
+- `tools/dev-build.ps1`'s `deps.json` patch is a workaround, not a fix;
+  if this project ever needs a real packaged/distributable build (blocked
+  anyway on the Trial license per §9.3), this gap needs an actual
+  resolution first.
+- No automated test runner wired up yet -- `tests/fixtures/SampleModel`
+  was verified by hand this session. §4 item 4 (snapshot-comparison test
+  infrastructure) is still open.
+
+---
+
+## 13. Post-review fixes (Fable5 design review, same session, 2026-08-02)
+
+A design-level review (run as a Fable5 agent, prompted to critique §11's
+scope decisions and the §12 implementation) flagged several issues.
+User decided to fix the high-severity ones immediately rather than carry
+them forward. Full review text is not reproduced here; this section
+records what changed as a result.
+
+- **IR reshape (the review's main structural objection).**
+  `IrMemberLite` no longer stores a pre-mapped `TsType: String` or a
+  pre-resolved `IsNullable: Boolean` — it now stores raw `ClrTypeName:
+  String` and the tri-state `Nullability: NullabilityKind`. `IrBuilder`
+  (Stage 2) no longer calls `TypeMapper` or applies
+  `--nrt-unknown-policy` — both moved into `DtsEmitter` (Stage 4). Why:
+  the old shape quietly folded Stage 3 (type mapping) into Stage 2,
+  re-creating the "Loader builds the TS AST directly" alternative
+  `docs/DESIGN.md` §1.2 explicitly rejected, and collapsed the
+  "explicitly annotated vs. Unknown+policy" distinction that
+  `docs/DESIGN.md` §4.3's `mark-unknown` policy needs. `IrBuilder.Build`
+  and `DtsEmitter.Emit` signatures changed accordingly (see
+  `src/Tsgen/Ir/IrBuilder.pas`, `src/Tsgen/Emit/DtsEmitter.pas`).
+- **`NullabilityScanner` token IDs now reference
+  `RemObjects.Elements.Code.Oxygene.Token`'s public static fields
+  directly** (`Token.TI_class`, `Token.TI_nullable`, etc.) instead of
+  hardcoded local magic numbers, since Elements is a weekly-release
+  product (§3) and these are compiler-internal ordinals.
+- **Fixed a real correctness bug**: multi-identifier field declarations
+  (`FirstName, LastName: nullable String;`) previously left every name
+  except the one immediately before the colon as silently `Unknown`.
+  `tests/fixtures/SampleModel/SampleModel.pas` now has such a
+  declaration as a regression case; both names correctly come back
+  `nullable` after the fix.
+- **Fixed an inaccurate comment** in `NullabilityScanner.pas` that
+  claimed nested types' "innermost type wins" — the code actually does
+  the opposite (outer type wins, since `currentTypeName` is only
+  assigned once). Comment corrected; behavior unchanged (still a known
+  limitation, §12.6).
+- **`TypeMapper`'s fallback changed from `'any'` to `'unknown'`**,
+  matching `docs/DESIGN.md` §2.4's specified policy for unmapped types
+  (the previous `'any'` fallback silently disabled type-checking exactly
+  where the tool's value proposition is type safety). `DtsEmitter` now
+  also prints a warning naming the unmapped CLR type and member when
+  this fallback triggers.
+- **Two new warnings for previously-silent failure modes**: `Program.pas`
+  now warns when `--source` is omitted (all members will fall back to
+  the unknown-policy default with zero NRT info), and `AssemblyLoader`
+  now counts and warns about skipped non-public/nested/generic/
+  unsupported-kind types instead of dropping them with no trace.
+- **`.gitignore` hardened**: `bin/`/`obj/` → `[Bb]in/`/`[Oo]bj/` (Elements
+  names the folder `Bin` with a capital B; the lowercase-only pattern
+  only worked by accident of Windows' case-insensitive filesystem), plus
+  explicit `*.deps.json`/`*.runtimeconfig*.json` patterns as extra
+  insurance against ever committing build output.
+- **`IsTypeOpen`'s lookback cap raised from 8 to 64 tokens** (an
+  arbitrarily small cap that a long modifier chain before `class`/
+  `record`/`interface` could have exceeded).
+- Re-ran `tools/dev-build.ps1` and the full `tests/fixtures/SampleModel`
+  end-to-end check (default flags, and `--enum-style union
+  --nrt-unknown-policy non-null`) after all of the above — output
+  unchanged except for the new `FirstName`/`LastName` regression case,
+  confirming no regressions from the reshape.
+
+**Deliberately NOT done this round** (review flagged these too, but
+they're bigger or lower-urgency asks — left for a future session, in the
+order the review suggested):
+1. Checking the `metadata.fx` lead from §9.4 (could obsolete the whole
+   Tokenizer-scanner approach if NRT turns out to be recoverable from
+   metadata directly — cheap to check, should happen before investing
+   more in scanner hardening).
+2. Committing `tests/fixtures/SampleModel/dist/index.d.ts` as a locked
+   snapshot-test baseline with an automated comparison script (§4 item
+   4) — the review suggested doing this *before* any further IR changes.
+   That didn't happen before §13's reshape; it was instead verified by
+   manual output comparison, which happened to work this time. Treat
+   that as "got away with it once," not as the ordering advice having
+   expired — snapshot infra should be a hard precondition before the
+   next structural change (item 3 below is exactly that kind of change).
+3. Reworking `NullabilityScanner.Tokenize` off `SimpleTokenizer`'s
+   shrinking-substring loop onto the real incremental
+   `RemObjects.Elements.Code.Oxygene.Tokenizer`/`TokenStream` (§12.2) —
+   would remove the OOM guard, the safety counter, and O(n²) string
+   copying, but re-opens the same low-level-API investigation that was
+   deliberately avoided in §12.2; sizeable enough to deserve its own
+   session rather than being folded into a fix-up pass.
+4. Adding the `INullabilityProvider` chain abstraction and the third
+   (`mark-unknown`) `--nrt-unknown-policy` value — the IR reshape above
+   makes both easier now (the tri-state `Nullability` is preserved all
+   the way to the emitter), but actually wiring them up is new scope,
+   not a fix to what was already built.
+5. The `docs/DESIGN.md` §4 rewrite (tracked since 2026-08-01, still
+   open) and syncing §10.1/§11's now-stale MVP description — documentation
+   debt, not code, and the review noted it now spans three places in the
+   design doc.
+6. Resolving the §9.2 Trial-license 3-day-cap question — not a code
+   task; needs a vendor follow-up or a license purchase decision, and the
+   review flagged it as increasingly urgent given how much sustained
+   EBuild use Phase 2 is now doing.
+7. **Reporting the `deps.json` runtime-asset gap (§10.2/§12.3) to
+   RemObjects.** This was on the original review's "shouldn't wait"
+   list alongside the `.gitignore` fix, but fell through the cracks of
+   this section on the first pass -- a follow-up verification review
+   caught the omission. RemObjects has already been responsive by email
+   once (§9), and Elements ships weekly, so a real upstream fix is
+   plausibly obtainable; every session this stays unreported extends how
+   entrenched `tools/dev-build.ps1`'s workaround becomes. Send the report
+   before the next implementation session, not after.

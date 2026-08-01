@@ -9,15 +9,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Phase 1 (design) is complete; Phase 2 (implementation) has not started. `src/`
-and `tests/` are currently empty (only `.gitkeep`). There is no build, lint,
-or test tooling in this repository yet — do not assume any commands exist
-until Phase 2 scaffolding is added.
+Phase 1 (design) is complete. Phase 2 (implementation) has a working MVP:
+`src/Tsgen` is a CLI (`tsgen generate --assembly <dll> --source <dir>
+--out <dir>`) covering Stage 1 (Loader, via `MetadataLoadContext`), a
+Tokenizer-based NRT source scanner, a lightweight Stage 2 IR, and a
+single-file Stage 4 `DtsEmitter` — see `HANDOFF.md` §12 for what was
+built, how, and its known limitations. Still missing: cycle detection,
+generics, the pluggable type-mapping/plugin chain, split-file output, and
+automated tests (`docs/DESIGN.md` §10.2 has the post-MVP order).
 
-Before starting implementation work, read `HANDOFF.md` (session handoff
-notes, open questions, Phase 2 task priority order) and the full design
-document, `docs/DESIGN.md` (English, canonical) / `docs/DESIGN_jp.md`
-(Japanese translation).
+**Building requires a workaround, not just `EBuild.exe`:** run
+`tools/dev-build.ps1` (not `EBuild.exe` directly) — EBuild has a known gap
+where it doesn't fully register non-framework references (NuGet or local)
+in the generated `deps.json` for `Mode=Echoes`/`TargetFramework=.NETCore`
+executables, so a plain build compiles fine but the exe fails at launch
+with `FileNotFoundException` (see `HANDOFF.md` §10.2 and §12.3). The
+script also assumes RemObjects Elements 13.0.0.3101 and a locally
+installed .NET 10 SDK; adjust the version constant at the top if either
+changes.
+
+Before continuing implementation work, read `HANDOFF.md` (session handoff
+notes, open questions, Phase 2 task priority order — §11 and §12
+especially, for the MVP scope decisions and what's already built) and the
+full design document, `docs/DESIGN.md` (English, canonical) /
+`docs/DESIGN_jp.md` (Japanese translation).
 
 ## Architecture (from docs/DESIGN.md)
 

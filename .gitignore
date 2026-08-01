@@ -1,10 +1,15 @@
 # RemObjects Elements / EBuild build output — trial license does not permit
 # distributing built binaries, so these must never be committed.
-bin/
-obj/
+# Elements/EBuild names the folder "Bin" (capital B); matching case
+# explicitly here so this still works on a case-sensitive filesystem.
+[Bb]in/
+[Oo]bj/
 *.dll
 *.exe
 *.pdb
+*.deps.json
+*.runtimeconfig.json
+*.runtimeconfig.dev.json
 
 # Water IDE user-specific files
 *.suo

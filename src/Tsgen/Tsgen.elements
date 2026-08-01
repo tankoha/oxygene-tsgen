@@ -1,0 +1,44 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Mode>Echoes</Mode>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>.NETCore</TargetFramework>
+    <RootNamespace>Tsgen</RootNamespace>
+    <AssemblyName>tsgen</AssemblyName>
+    <ProjectGuid>{4D5E6F70-8192-4AB0-9C2D-3456789ABCDE}</ProjectGuid>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <OutputPath>.\Bin\Release</OutputPath>
+    <CpuType>anycpu</CpuType>
+  </PropertyGroup>
+  <ItemGroup>
+    <NuGetReference Include="System.Reflection.MetadataLoadContext:8.0.0" />
+    <!--
+      Referenced without redistributing the SDK DLL itself (RemObjects
+      confirmed this is permitted for the Trial license, HANDOFF.md §9).
+      Private=False: do not copy this DLL into our own build output.
+    -->
+    <Reference Include="RemObjects.Elements">
+      <HintPath>C:\Program Files (x86)\RemObjects Software\Elements\Bin\RemObjects.Elements.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="RemObjects.Elements.Code">
+      <HintPath>C:\Program Files (x86)\RemObjects Software\Elements\Bin\RemObjects.Elements.Code.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="RemObjects.Elements.Oxygene">
+      <HintPath>C:\Program Files (x86)\RemObjects Software\Elements\Bin\RemObjects.Elements.Oxygene.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Compile Include="Loading\RawModel.pas" />
+    <Compile Include="Loading\AssemblyLoader.pas" />
+    <Compile Include="Nrt\NullabilityScanner.pas" />
+    <Compile Include="Ir\IrModel.pas" />
+    <Compile Include="Ir\TypeMapper.pas" />
+    <Compile Include="Ir\IrBuilder.pas" />
+    <Compile Include="Emit\DtsEmitter.pas" />
+    <Compile Include="Cli\Program.pas" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath)\RemObjects Software\Elements\RemObjects.Elements.targets" />
+</Project>

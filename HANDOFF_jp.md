@@ -669,3 +669,337 @@ Oxygene/Echoeから使用可能**。これにより、設計全体の前提で�
   何らかの実行時NuGet依存関係を持つようになった時点で念頭に置くこと —
   `EBuild`のコンパイルが成功したからといって、正しくデプロイ可能な
   出力になっているとは限らないので、確認すること。
+
+---
+
+## 11. Phase 2着手: MVPスコープの決定 (2026-08-02)
+
+§4項目3のための`src/`実装コードを書き始める前に、以下のスコープ判断を
+行った (ユーザーに実際の分岐として確認を取ったものはその旨明記、それ
+以外は実装上のデフォルト判断としてここに記録し、暗黙のまま進めない)。
+実際に何を作ったかの詳細な報告は§12にある。
+
+- **MVPのnullable(NRT)対応は、最初からTokenizerベースのソーススキャン
+  を使う**。`docs/DESIGN.md` §10.1が元々書いていた「reflectionスタブ
+  のみ」の経路ではない。ユーザー確認済み: これにより、Oxygene製の
+  すべての型でnullabilityが常に`Unknown`になってしまうMVPを出すのでは
+  なく、§8.3の結論をきちんと反映させることになる。帰結として、CLIには
+  `docs/DESIGN.md` §10.1が元々描いていた`--assembly`/`--out`だけの
+  形に加えて、新たに`--source <dir>`という入力が必要になる。
+- **NRTスキャナのスコープ: MVPではプロパティとフィールドのみ。**
+  メソッドのパラメータ/戻り値のnullability (§8の実機検証でも対象に
+  含めていた) は見送る — Inertia Page Propsの形 (§6) には影響しない、
+  実際にシリアライズされるのはプロパティ/フィールドの方だから。
+- **出力モード: MVPでは単一ファイルの`.d.ts`のみ**(.NETの名前空間に
+  対応する`declare namespace`をネストした1ファイル)。
+  `docs/DESIGN.md` §7.3が併せて説明しているsplit-file / ESモジュール
+  レイアウトは見送る。
+- **型マッピング: MVPではStage 3の代わりにハードコードしたプリミティブ
+  /enumマッピング関数を使う**。プラガブルな`ITypeMappingRule`チェーン
+  ではない — `docs/DESIGN.md` §10.2がプラグイン機構をpost-MVPリストの
+  終盤に置いている方針と一致する。
+- **enum戦略: numericとstring-literal-unionの両方を実装**、
+  `--enum-style`フラグで切り替え可能(emitter内の小さな分岐で済むので
+  安く済み、§10.1の「設定で選択可能」という文言からわざわざ1つに絞る
+  理由はない)。
+- これらの決定により、§4項目3(本タスク)のスコープは: Stage 1 Loader
+  (§10の`MetadataLoadContext`によるreflection) + プロパティ/フィールド
+  限定のTokenizer NRTスキャン + 軽量Stage 2 IR + Stage 4の単一ファイル
+  `DtsEmitter`、に収まる。循環参照検出・ジェネリクス・split-file出力・
+  プラグインチェーン・メソッドレベルNRTはすべて`docs/DESIGN.md` §10.2
+  通りpost-MVPのまま。
+
+---
+
+## 12. タスク3の結果: MVP実装 (`src/Tsgen`)、Windows実機、2026-08-02
+
+**§4項目3が完了した。** `src/Tsgen`は実際に動くCLI
+(`tsgen generate --assembly <dll> --source <dir> --out <dir>`) で、
+Oxygeneでビルドされたアセンブリを`MetadataLoadContext`(§10)経由で
+読み込み、そのソースを実際のOxygeneトークナイザで`nullable`/
+`not nullable`をスキャンし、軽量IRを構築し、単一ファイルの`.d.ts`を
+出力する。`tests/fixtures/SampleModel`に対してend-to-endで検証済み
+(§12.5参照)。
+
+### 12.1 プロジェクト構成
+
+```
+src/Tsgen/Tsgen.elements       -- Exe, Mode=Echoes, TargetFramework=.NETCore
+src/Tsgen/Loading/              -- Stage 1: RawModel.pas, AssemblyLoader.pas
+src/Tsgen/Nrt/                  -- NullabilityScanner.pas (Tokenizerベースのスキャン)
+src/Tsgen/Ir/                   -- Stage 2: IrModel.pas, TypeMapper.pas, IrBuilder.pas
+src/Tsgen/Emit/                 -- Stage 4: DtsEmitter.pas
+src/Tsgen/Cli/Program.pas       -- 引数解析 + パイプライン接続
+tools/dev-build.ps1             -- ビルド + deps.json回避策、§12.3参照
+tests/fixtures/SampleModel/     -- 実機検証用フィクスチャ、§12.5参照
+```
+
+MVPではCLIからライブラリを分離せず単一プロジェクトとした — まだ別々の
+利用者がいないので分離する理由がない。2つ目のエントリポイント
+(MSBuildタスクやwatchモードのホストなど) が出てきたら見直すこと。
+
+### 12.2 使えるトークナイザのエントリポイントを見つけるまで
+
+`HANDOFF.md` §7では公式レキサーとして
+`RemObjects.Elements.Code.Oxygene.Tokenizer`
+(コンストラクタ引数は`TokenStream`) を挙げていたが、その公開APIは
+生の逐次状態機械 (`Next()`、`CurrTokenID`、`Row`/`Col`など) で、
+「文字列全体をトークナイズする」ような単純なエントリポイントは
+なかった — §7.2の「トークンストリームの上にまだ軽量パーサを
+乗せる必要がある」という警告通りだった。reflectionでの調査
+(`ReflectionOnlyLoadFrom` + 依存関係チェーン`RemObjects.Elements.dll`、
+`RemObjects.Elements.Code.dll`を手動で事前ロード。スクリプトからは
+`ReflectionOnlyAssemblyResolve`を使えなかったための回避策) の過程で、
+もっと扱いやすい代替が見つかった:
+
+- **`RemObjects.Elements.Oxygene.SimpleTokenizer`** — `Parse(text:
+  String): Void`と`Items: List<TokenValue>`
+  (`TokenValue` = `{ Token: Int32, StartPos: Int32, Length: Int32 }`)を
+  持つ公開の静的クラス。**実機での試行錯誤で見つかったクセ(どこにも
+  文書化されていない):** `Parse`は常に与えた文字列の**先頭の1トークン
+  だけ**しか返さない — 同じ文字列に対して繰り返し呼んでも進まない。
+  そのためスキャナは、縮めていく部分文字列に対して`Parse`をループで
+  呼び、毎回絶対オフセットを計算し直す方式にした。これで動くには
+  動くが、末尾に何も続かない孤立した`.`(例えば末尾改行のない
+  ユニットの最後の`end.`)を渡すと、`Parse`内部の何らかのループが
+  暴走してプロセスが"Out of memory."で落ちる — `NullabilityScanner`
+  では`Parse`を呼ぶ**前**に`remaining.Trim() = '.'`(および
+  `Length = 0`)をチェックすることでこれを回避している(呼んだ後で
+  はない)。将来このスキャナを書き直す際も、このガードか同等の対策を
+  残すこと。
+- **トークンID定数**は`RemObjects.Elements.Code.Oxygene.Token`
+  (enumではなく、抽象の静的専用クラス) の公開static `Int32`フィールド
+  として存在する。例: `TI_class=208`、`TI_nullable=250`、`TI_not=249`、
+  `TI_property=259`、`TI_begin=205`、`TI_end=219`、`T_Identifier=100`、
+  `TINT_WhiteSpace=69`、`T_Colon=104`、`T_SemiColon=110`、
+  `T_OpenRound=105`、`T_CloseRound=106`、`T_Dot=103`。実際のスニペット
+  に対する`SimpleTokenizer`の出力と突き合わせて正しいことを確認済み
+  (§12.5のサンプルダンプ参照)。全フィールド一覧(277個)はここには
+  転記していない — 今後さらに必要になったら(例えばメソッドレベルの
+  NRT対応。パラメータリストのトークンなどが要る。§11で一部スコープ
+  外にした部分)、`RemObjects.Elements.Oxygene.dll`の`Token`クラスに
+  対して`ReflectionOnlyLoadFrom` + `GetFields(Public, Static)`で
+  再度導出すること。
+
+### 12.3 `deps.json`の穴はNuGetだけでなくローカルReferenceでも再現する
+
+§10.2では`NuGetReference`でこの問題を確認したが、通常の
+`<Reference Include="..."><HintPath>...</HintPath></Reference>`項目
+(ここでは`RemObjects.Elements(.Code/.Oxygene).dll`に使用。`CLAUDE.md`の
+ライセンス方針に従い`Private=False`、つまり明示的に自分たちの出力には
+コピーしない設定) でも全く同じ形で再現した。つまりこれはNuGet固有の
+問題ではなく、`Mode=Echoes` / `TargetFramework=.NETCore`の**実行
+ファイル**において、基本フレームワークを超える参照全般に効いてくる
+EBuildの一般的な穴だということになる。
+
+**回避策を`tools/dev-build.ps1`として定型化した:** `EBuild.exe`を実行し、
+4つの追加DLL (`System.Reflection.MetadataLoadContext.dll`はEBuildの
+NuGetパッケージキャッシュから、残り3つの`RemObjects.Elements*`系DLLは
+Elementsインストール先から) を`Bin/Release`にコピーし、
+(`ConvertFrom-Json`/`ConvertTo-Json`経由で) `tsgen.deps.json`に欠けている
+`"runtime"`アセットエントリを追加パッチする。ビルドのたびにこの
+スクリプトを再実行すること — 素の`EBuild.exe`ビルドだけではコンパイル
+は通っても、§10.2と同じく起動時に`FileNotFoundException`で落ちる。
+このスクリプトは現在のElementsバージョン(`13.0.0.3101`)と、ローカルに
+`.NET 10` SDKが入っていることを前提にハードコードしている — ローカル
+環境が変わったらスクリプト内の`$RemObjectsElementsVersion`を更新する
+こと。これはあくまで開発ループ用の便宜的スクリプトであり、EBuild本体
+の不具合を修正するものではない(RemObjectsへの報告は未実施、他の
+マシン/SDKでも再現するかは未確認のまま)。
+
+### 12.4 Oxygeneコードを書く中で遭遇したその他の落とし穴
+
+- **`nullable`、`property`、`namespace`は予約語**であり、自分の識別子
+  (enumメンバー、フィールド名) には使えない — にもかかわらず、まさに
+  `NullabilityScanner`が*他の*コードの中から検出しようとしている単語
+  そのものである。リネーム対応: `RawMemberKind.Property` →
+  `.PropertyMember`、`NullabilityKind.Nullable`/`.NotNullable` →
+  `.IsNullable`/`.IsNotNullable`、`RawType.Namespace`/
+  `IrTypeLite.Namespace` → `.NamespaceName`。すでに`Namespace`という
+  名前を持つ*外部の*メンバー(例えばreflectionの
+  `System.Type.Namespace`)を読み取るのは問題なくコンパイルできる —
+  制約はあくまで、裸の予約語で自分の識別子を宣言することに対して
+  であり、メンバーアクセスには及ばない。
+- **Oxygeneの`case`文は、C#の`switch`のように文字列を対象にはできない
+  らしい**(CLIフラグ解析とenum-文字列マッピングで試しただけで、公式
+  ドキュメントでは未確認)。`String`を分岐対象にする箇所はリスクを
+  取らず`if`/`else if`の連鎖にした。`Int32`のトークンID(順序型)に
+  対する`case`はスキャナ全体で問題なく使えている。
+- **`not nullable`のフィールド/プロパティは宣言時に初期化が必須**
+  であることを改めて確認した(§8.1で既知): `property Id: not
+  nullable String read write := '';` — `:= <デフォルト値>`は
+  `read write`の**後**に置く、前ではない
+  (`tests/fixtures/SampleModel/SampleModel.pas`)。
+
+### 12.5 End-to-end検証
+
+フィクスチャ: `tests/fixtures/SampleModel/SampleModel.pas` — enum
+(`Status`) とクラス (`User`)。`User`には`not nullable`なプロパティ1つ、
+`nullable`なプロパティ1つ、NRTアノテーションが全くないプロパティ2つ
+(`--nrt-unknown-policy`の動作確認用)を持たせた。
+
+コマンド (`tools/dev-build.ps1`実行後):
+```
+tsgen generate --assembly tests/fixtures/SampleModel/Bin/Release/SampleModel.dll \
+               --source tests/fixtures/SampleModel \
+               --out tests/fixtures/SampleModel/dist
+```
+
+出力 (`tests/fixtures/SampleModel/dist/index.d.ts`、デフォルトの
+`--enum-style numeric --nrt-unknown-policy nullable`):
+```typescript
+declare namespace SampleModel {
+  export enum Status {
+    Active = 0,
+    Inactive = 1,
+    Pending = 2,
+  }
+  export interface User {
+    Id: string;
+    DisplayName: string | null;
+    Age: number | null;
+    IsAdmin: boolean | null;
+  }
+}
+```
+`Id`(明示的に`not nullable`)には`| null`が付かず、`DisplayName`
+(明示的に`nullable`)には付く。`Age`/`IsAdmin`(アノテーションなし、
+すなわち`Unknown`)は`--nrt-unknown-policy`のデフォルト(`nullable`)に
+従う。`--enum-style union --nrt-unknown-policy non-null`で再実行した
+ところ、enumは正しくstring-literal unionに切り替わり、`| null`は
+`Age`/`IsAdmin`からのみ外れた(`DisplayName`からは外れなかった) —
+このポリシーが本当に`Unknown`なメンバーにのみ適用され、明示的に
+アノテーションされたメンバーには適用されないことが確認できた。
+
+### 12.6 既知の限界・未対応事項
+
+- **NRTスキャナはヒューリスティックであり、本物のパーサではない。**
+  `class`/`record`/`interface`/`begin`/`try`/`case`のネストを単一の
+  深さカウンタ+メソッドのパラメータリストを除外するための括弧深さ
+  カウンタで追跡しているだけ(§11ですでにメソッドレベルNRTはスコープ
+  外にした) — ネストした型、1つの`type`セクションに複数の型がある
+  場合、インデクサ形式のパラメータを持つプロパティに対しては未検証。
+  実際の、より大きなOxygene/Inertiaコードベースに頼る前に、
+  `tests/fixtures/`によるケースを増やして堅牢化すること。
+- 単一ファイルの`.d.ts`出力のみ、Stage 3のプラガブルチェーンの代わりに
+  ハードコードしたプリミティブ/enum型マッピング、循環参照検出なし、
+  ジェネリクスなし — すべて§11のスコープ決定と
+  `docs/DESIGN.md` §10.2の既存のpost-MVP順序通り。
+- `tools/dev-build.ps1`の`deps.json`パッチは回避策であり修正ではない。
+  もし本プロジェクトが実際にパッケージ化/配布可能なビルドを必要と
+  するようになったら(§9.3の通りTrialライセンスでは既にブロック
+  されているが)、この穴には本当の解決が先に必要になる。
+- 自動テストランナーはまだ組み込んでいない — `tests/fixtures/SampleModel`
+  は今回のセッションで手動検証したのみ。§4項目4
+  (スナップショット比較によるテスト基盤) は引き続き未着手。
+
+---
+
+## 13. レビュー後の修正 (Fable5による設計レビュー、同一セッション、2026-08-02)
+
+設計レベルのレビュー(§11のスコープ決定と§12の実装内容を批評するよう
+プロンプトしたFable5エージェントとして実行)で複数の問題が指摘された。
+ユーザーは重要度の高いものをその場で修正することを選び、先送りにし
+なかった。レビュー本文はここには転記せず、その結果として何を変更した
+かのみ記録する。
+
+- **IR再構成(レビューの主な構造的異議)。** `IrMemberLite`は、事前に
+  マッピング済みの`TsType: String`や事前に解決済みの`IsNullable:
+  Boolean`をもう保持しない — 代わりに生の`ClrTypeName: String`と
+  三値の`Nullability: NullabilityKind`を保持する。`IrBuilder`
+  (Stage 2)はもう`TypeMapper`を呼んだり`--nrt-unknown-policy`を適用
+  したりしない — どちらも`DtsEmitter`(Stage 4)へ移した。理由:
+  旧構造は暗黙のうちにStage 3(型マッピング)をStage 2に折り込んで
+  しまっており、`docs/DESIGN.md` §1.2が明示的に却下した「Loaderが
+  直接TS ASTを組み立てる」案を実質再現していた上、
+  `docs/DESIGN.md` §4.3の`mark-unknown`ポリシーに必要な「明示的な
+  アノテーション」と「Unknown+ポリシー適用」の区別も潰していた。
+  `IrBuilder.Build`と`DtsEmitter.Emit`のシグネチャもこれに合わせて
+  変更した(`src/Tsgen/Ir/IrBuilder.pas`、
+  `src/Tsgen/Emit/DtsEmitter.pas`参照)。
+- **`NullabilityScanner`のトークンIDを
+  `RemObjects.Elements.Code.Oxygene.Token`の公開static フィールドへの
+  直接参照に変更した**(`Token.TI_class`、`Token.TI_nullable`など)。
+  ハードコードしたローカルのマジックナンバーではなくした — Elementsは
+  週次リリース製品であり(§3)、これらはコンパイラ内部の序数だから。
+- **実バグを1つ修正した**: 複数識別子のフィールド宣言
+  (`FirstName, LastName: nullable String;`)で、コロン直前の1つを
+  除く全ての名前が無言で`Unknown`のままになっていた。
+  `tests/fixtures/SampleModel/SampleModel.pas`にこの形の宣言を
+  回帰テストケースとして追加し、修正後は両方とも正しく`nullable`に
+  なることを確認した。
+- **不正確なコメントを修正した**: `NullabilityScanner.pas`に「ネスト
+  した型は"innermost type"が勝つ」という趣旨のコメントがあったが、
+  実際のコードは逆(`currentTypeName`は一度しか代入されないため、
+  外側の型が勝つ)だった。コメントを修正、挙動自体は変更なし
+  (引き続き既知の限界、§12.6)。
+- **`TypeMapper`のフォールバックを`'any'`から`'unknown'`に変更した**。
+  `docs/DESIGN.md` §2.4が未マッピング型に対して指定しているポリシーに
+  合わせた(従来の`'any'`フォールバックは、まさにこのツールの価値の
+  核心である型安全性が失われる箇所で、無言で型チェックを無効化して
+  いた)。このフォールバックが発動した際、`DtsEmitter`が未マッピング
+  のCLR型とメンバー名を示す警告も出すようにした。
+- **従来無言だった2つの失敗モードに警告を追加した**: `Program.pas`は
+  `--source`が省略された場合(全メンバーがNRT情報ゼロのままunknown-
+  policyのデフォルトにフォールバックする)に警告を出すようになり、
+  `AssemblyLoader`は非public/ネスト/ジェネリック/非対応種別の型を
+  無言で捨てるのではなく、件数をカウントして警告するようになった。
+- **`.gitignore`を強化した**: `bin/`/`obj/` → `[Bb]in/`/`[Oo]bj/`
+  (Elementsはフォルダ名を大文字始まりの`Bin`にする。小文字のみの
+  パターンはWindowsのファイルシステムが大文字小文字を区別しない
+  ことに偶然助けられていただけだった)。加えて`*.deps.json`/
+  `*.runtimeconfig*.json`パターンも明示的に追加し、ビルド成果物を
+  誤ってコミットしないための保険を増やした。
+- **`IsTypeOpen`のルックバック上限を8から64トークンに引き上げた**
+  (`class`/`record`/`interface`の前に長い修飾子の連なりがあると
+  超えかねない、恣意的に小さすぎる上限だった)。
+- 上記すべての後、`tools/dev-build.ps1`と
+  `tests/fixtures/SampleModel`のend-to-end確認(デフォルトフラグ、
+  および`--enum-style union --nrt-unknown-policy non-null`)を再実行
+  — 新しい`FirstName`/`LastName`の回帰テストケース分を除いて出力は
+  変わらず、今回の再構成によるリグレッションがないことを確認した。
+
+**今回あえてやらなかったこと**(レビューではこれらも指摘されたが、
+規模が大きい、あるいは緊急度が低いため、将来のセッションに残した。
+レビューが提案した順序で列挙する):
+1. §9.4の"metadata.fx"の手がかりを確認すること(もしNRT情報が
+   メタデータから直接復元可能だと分かれば、Tokenizerスキャナという
+   アプローチ全体が不要になる可能性がある — 安価に確認できるので、
+   スキャナの堅牢化にこれ以上投資する前にやるべき)。
+2. `tests/fixtures/SampleModel/dist/index.d.ts`を、固定したスナップ
+   ショットテストの基準として自動比較スクリプトと共にコミットする
+   こと(§4項目4) — レビューは「今後のIR変更の前に」やることを
+   提案していた。§13の再構成の前にはそれをやらず、代わりに手動での
+   出力比較で確認し、今回はたまたまうまくいった。これは「今回は
+   たまたま切り抜けられた」だけであって、「順序に関する助言が
+   もう不要になった」という意味ではないと捉えること — *次の*構造
+   変更の前にはスナップショット基盤を必須の前提条件とすべき(下の
+   項目3がまさにそういう種類の変更にあたる)。
+3. `NullabilityScanner.Tokenize`を、`SimpleTokenizer`の縮小部分文字列
+   ループ方式から、本来の逐次型`RemObjects.Elements.Code.Oxygene.
+   Tokenizer`/`TokenStream`へ書き直すこと(§12.2) — OOMガード、
+   セーフティカウンタ、O(n²)の文字列コピーを取り除けるが、§12.2で
+   あえて避けた低レベルAPIの調査を再び開くことになる。修正作業に
+   折り込むには十分大きく、独立したセッションに値する。
+4. `INullabilityProvider`チェーンの抽象化と、3つ目
+   (`mark-unknown`)の`--nrt-unknown-policy`値の追加 — 上記のIR
+   再構成により、三値の`Nullability`がemitterまで保持されるため、
+   どちらも今なら実装しやすくなっている。ただし実際に配線するのは
+   新規スコープであり、既存実装への「修正」ではない。
+5. `docs/DESIGN.md` §4の書き直し(2026-08-01から追跡中、引き続き
+   未着手)と、§10.1/§11の陳腐化したMVP記述の同期 — これはコードでは
+   なくドキュメント上の負債であり、レビューは現在この点が設計書の
+   3箇所に広がっていると指摘した。
+6. §9.2のTrialライセンス3日間上限問題の解決 — コードのタスクでは
+   なく、ベンダーへのフォローアップかライセンス購入の判断が必要。
+   レビューは、Phase 2が継続的にEBuildを使い続けている現状を踏まえ、
+   この問題の緊急度が増していると指摘した。
+7. **`deps.json`の実行時アセットの穴(§10.2/§12.3)をRemObjectsに
+   報告すること。** これは元のレビューで`.gitignore`の修正と並んで
+   「先延ばしにすべきでない」リストに入っていたが、このセクションの
+   一回目の記載では抜け落ちていた — 修正内容を検証する2回目の
+   レビューでこの抜けが指摘された。RemObjectsは(§9で)一度メールに
+   迅速に対応済みで、Elementsは週次リリースなので、実際に上流で
+   修正してもらえる見込みは十分ある。報告しないまま経過するセッション
+   が増えるほど、`tools/dev-build.ps1`の回避策が定着してしまう。次の
+   実装セッションの前に報告を送ること、後回しにしないこと。
