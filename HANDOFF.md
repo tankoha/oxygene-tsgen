@@ -1277,3 +1277,118 @@ identical to the new `expected/default.d.ts` and is now superseded by the
   exercise those cases would make good companion work for §13 deferred
   item 3, since a scanner rework is exactly where those limitations are
   either fixed or newly regression-locked.
+
+---
+
+## 16. §13 deferred item 3 done: NRT scanner moved onto the real tokenizer (Windows hands-on, 2026-08-02)
+
+**`NullabilityScanner.Tokenize` no longer uses `SimpleTokenizer`.** It now
+drives the real Oxygene tokenizer through
+`RemObjects.Elements.Code.TokenStream`, which removes all three problems
+§12.2/§13 flagged: the OOM guard, the safety counter, and the O(n²)
+shrinking-substring copying. Verified against the existing snapshot suite
+(§15) with no output change, plus a new fixture that locks in the
+tokenizer-sensitive behaviour.
+
+Done on Opus 5 rather than Sonnet 5, per `CLAUDE.md`'s model-selection
+guidance naming this specific scanner as an Opus-worthy core.
+
+### 16.1 The API, which is better than §12.2 expected
+
+§12.2 assumed this rework meant driving `Tokenizer`'s raw incremental
+state machine (`Next()`, `CurrTokenID`, `Row`/`Col`) by hand, and priced
+the task accordingly. That turned out not to be necessary:
+**`RemObjects.Elements.Code.TokenStream` (in `RemObjects.Elements.dll`,
+not `RemObjects.Elements.Code.dll`) extends `ViewableList<Fragment>` and
+tokenizes a whole file in one call**, exposing the result as a plain
+array. The usable shape is:
+
+```
+Languages.Register(new OxygeneLanguage);          // once per process
+var stream := new TokenStream(FragmentType.Oxygene, false);
+stream.SetText(text);                              // tokenizes; no Load() needed
+for i := 0 to stream.Count - 1 do
+  ... stream.Items[i] ...                          // Fragment
+```
+
+- `RemObjects.Elements.Code.Fragment` has public `Token: Int32`,
+  `StartPos: Int32`, `Length: Int32` fields plus `GetString()` and an
+  `IsWhitespace` property — i.e. the same information `SimpleTokenizer`'s
+  `TokenValue` carried, but produced by the real lexer over the entire
+  input at once instead of one token at a time.
+- **`FragmentType.Oxygene = 1`** is the enum value for the constructor.
+- **The registration step is the non-obvious part.** `TokenStream`'s
+  constructor resolves a provider out of the process-global
+  `RemObjects.Elements.Languages` registry, and simply referencing
+  `RemObjects.Elements.Oxygene.dll` does not populate it — without
+  `Languages.Register(new OxygeneLanguage)` first, construction throws
+  `System.Exception: Unsupported Language: Oxygene`. `NullabilityScanner`
+  guards this behind a `class var` flag since it's a one-time global
+  side effect.
+
+Because everything below `Tokenize` still works off the local `ScanToken`
+list, this was a change to one method plus a `uses` clause — `ScanFile`,
+`IsTypeOpen`, `FindTypeNameBefore` and `ScanMemberDecl` are untouched.
+That seam is worth keeping if the tokenizer is ever swapped again.
+
+### 16.2 Behaviours confirmed hands-on before writing any Oxygene
+
+Probed by executing the API from a throwaway console app in the session
+scratchpad (same disposable, never-committed approach as §14.1) rather
+than guessing and iterating through EBuild round-trips:
+
+- `SetText()` alone populates `Items`/`Count`; `Load()` is not needed.
+- **Every stream ends with a zero-length `T_EOF` fragment**, which the
+  scanner must skip.
+- `Items` is a capacity-sized array, so `Count` — not `Items.Length` —
+  bounds the loop.
+- Whitespace fragments are not emitted at all by default, but **comment
+  fragments are**, carrying `IsWhitespace = true`. The scanner filters on
+  `IsWhitespace` and additionally on the explicit
+  whitespace/comment/xmldoc token IDs, preserving the previous filter
+  exactly.
+- **The `"end."`-with-no-trailing-newline input that made
+  `SimpleTokenizer.Parse` spin and die with "Out of memory" (§12.2)
+  tokenizes cleanly here** (3 fragments: `TI_end`, `T_Dot`, `T_EOF`), so
+  the `remaining.Trim() = '.'` guard is gone rather than merely relocated.
+- For an `&`-escaped identifier (`&class` used as a member name) the
+  tokenizer reports `T_Identifier` with the `&` already stripped, and
+  `GetString()`, `GetOriginalString()` and a raw `StartPos`/`Length`
+  slice all agree. The scanner uses `GetString()`, which is what the
+  reflection side sees as the member name — a small correctness gain the
+  old raw-slicing path would not have had.
+
+### 16.3 New fixture: `tests/fixtures/TokenizerEdgeCases`
+
+Added per §15.4's suggestion, and because the existing `SampleModel`
+fixture exercises none of what this rework actually changes. It declares
+one class whose members are each named for the thing they prove, and the
+file **deliberately ends with `end.` and no trailing newline** — the
+exact input that used to crash the old scanner.
+
+Two cases are locked in (`cases.json`): CLI defaults, and
+`--nrt-unknown-policy non-null`. **The `non-null` case is the one with
+discriminating power** — under the default policy an `Unknown` member and
+a member that wrongly picked up a leaked `nullable` both render as
+`| null`, so a leak would pass unnoticed. Under `non-null`, `Unknown`
+renders bare and only genuine annotations keep `| null`, so the snapshot
+actually distinguishes the two. Worth remembering when adding future
+NRT fixtures: a default-policy-only snapshot can hide exactly the bug
+class these fixtures exist to catch.
+
+Confirmed correct by inspection before being committed as a baseline
+(not just accepted because it ran): `nullable`/`not nullable` appearing
+inside a line comment, a block comment, an XML doc comment, and a string
+literal default value all correctly fail to annotate the following
+member, while genuine annotations and the multi-identifier declaration
+still resolve. The scanner reports exactly 5 annotated members for the
+file, matching the 5 genuine annotations.
+
+### 16.4 What this does not fix
+
+The limitations in §12.6 are unchanged — this replaced *how tokens are
+produced*, not the heuristic that walks them. Nested types, multiple
+types under one `type` section, and indexer-style property parameter
+lists are still unhandled, and `ScanFile` is still a depth-counter
+heuristic rather than a parser. Those now have a snapshot net under them,
+so they're a safer thing to attack next than they were before §15.

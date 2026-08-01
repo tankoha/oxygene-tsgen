@@ -23,3 +23,9 @@ No.,発見フェーズ#,発見フェーズ名,発見元,カテゴリ,重要度,�
 22,6,Fable5レビュー2回目(検証),Fable5,設計上の副作用,低,警告出力のためDtsEmitter.Emitが純粋関数でなくなった。将来のDiagnostics実装時に要対応,DtsEmitter.pas,先送り,,,Diagnosticsコンポーネント実装時にstderr化+重複排除を検討
 23,6,Fable5レビュー2回目(検証),Fable5,ドキュメント表現,低,「スナップショットテストを先にやるという助言はもう意味がない」という誤解を招く表現,HANDOFF.md §13,修正済み,6,Fable5レビュー2回目(検証),「今回はたまたま切り抜けただけ」という文言に修正
 24,6,Fable5レビュー2回目(検証),Fable5,検証範囲の限界,低,日英ドキュメントの同期はスポットチェックのみで全行監査ではない旨の注記,HANDOFF_jp.md,未対応,,,参考情報として記録のみ。必要に応じて全行監査を実施
+25,8,metadata.fx調査,自己(調査),調査結果(否定的),中,"metadata.fxはROSF形式の独自リソースとして実在するが、NRT情報は含まれない(not nullable/nullableでレコードのバイト構造が完全に同一、System.String型エントリも1つを共有)",metadata.fxリソース(§9.4の手がかり),解決済み,8,metadata.fx調査,§8.3のTokenizerスキャン方針が唯一の実装経路であると確定。設計変更なし
+26,8,metadata.fx調査,自己(環境),環境制約,中,.NET SDKが未インストール(ランタイムのみ)でdotnet new/build/runが使用不可だった,ローカル開発環境,解決済み,8,metadata.fx調査,ユーザーがセッション中に.NET 10 SDKをインストール
+27,9,スナップショットテスト基盤,自己(実装),テスト基盤の欠如,高,MVP実装以降も自動テストが存在せず、構造変更のたびに手動出力比較に頼っていた,テスト全体(§4項目4),解決済み,9,スナップショットテスト基盤,tools/run-tests.ps1とcases.json/expected/の規約を追加。PASS/FAIL/UpdateSnapshotsを実機検証
+28,10,NRTスキャナ作り直し,自己(調査),API仕様不明点(未文書化),高,"TokenStreamのコンストラクタがLanguagesレジストリを参照し、DLL参照だけでは""Unsupported Language: Oxygene""例外になる",NullabilityScanner.pas / TokenStream,解決済み,10,NRTスキャナ作り直し,Languages.Register(new OxygeneLanguage)をclass varガード付きで呼ぶよう実装
+29,10,NRTスキャナ作り直し,自己(実装),技術的負債,高,"SimpleTokenizerの縮小部分文字列ループによるO(n²)コピー、OOMガード、セーフティカウンタ",NullabilityScanner.Tokenize,解決済み,10,NRTスキャナ作り直し,TokenStream.SetTextで一括トークナイズする方式に置換。3つの問題すべて解消
+30,10,NRTスキャナ作り直し,自己(設計判断),テスト設計の落とし穴,中,"デフォルトポリシーのみのスナップショットでは、Unknownと注釈漏れが共に'| null'となり区別できずバグを隠す",テスト設計(TokenizerEdgeCases),解決済み,10,NRTスキャナ作り直し,判別力のある--nrt-unknown-policy non-nullケースを必ず含める方針をCLAUDE.mdに明文化

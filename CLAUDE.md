@@ -22,10 +22,18 @@ generics, the pluggable type-mapping/plugin chain, and split-file output
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
 output against committed `expected/*.d.ts` snapshots per fixture's
 `cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
-an intentional output change. See `HANDOFF.md` §15. Only one fixture
-(`SampleModel`) exists so far — it does not cover nested types, multiple
-types per `type` section, or indexer-style property parameter lists (see
-`HANDOFF.md` §12.6's scanner limitations).
+an intentional output change. See `HANDOFF.md` §15. Two fixtures exist:
+`SampleModel` (enums, explicit NRT, unknown-policy fallback) and
+`TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
+trailing newline). Neither covers nested types, multiple types per
+`type` section, or indexer-style property parameter lists — still open
+per `HANDOFF.md` §12.6.
+
+When adding an NRT fixture, include a `--nrt-unknown-policy non-null`
+case: under the default policy an `Unknown` member and one that wrongly
+picked up a leaked annotation both render `| null`, so a default-only
+snapshot hides exactly the bug class the fixture exists to catch
+(`HANDOFF.md` §16.3).
 
 **`metadata.fx` does not carry NRT info** — confirmed hands-on
 (`HANDOFF.md` §14), closing the lead from §9.4. The Tokenizer-based

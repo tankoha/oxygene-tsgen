@@ -4,6 +4,8 @@ uses
   System.Collections.Generic,
   System.IO,
   System.Text,
+  RemObjects.Elements,
+  RemObjects.Elements.Code,
   RemObjects.Elements.Oxygene,
   RemObjects.Elements.Code.Oxygene;
 
@@ -34,6 +36,11 @@ type
     than hardcoded as local magic numbers, since Elements is a
     weekly-release product (HANDOFF.md §3) and these are compiler-internal
     ordinals that could renumber across versions.
+
+    Tokenizing goes through RemObjects.Elements.Code.TokenStream, which
+    drives the real Oxygene tokenizer over the whole file at once (see
+    HANDOFF.md §16). Everything below this layer works off the ScanToken
+    list, so the tokenizer stays swappable behind Tokenize().
   }
   NullabilityScanner = public static class
   private
@@ -59,31 +66,64 @@ type
     const TOK_NULLABLE = Token.TI_nullable;
     const TOK_NOT = Token.TI_not;
     const TOK_NAMESPACE = Token.TI_namespace;
+    const TOK_EOF = Token.T_EOF;
+
+    class var fLanguageRegistered: Boolean := false;
+
+    {
+      TokenStream's constructor resolves a language provider out of the
+      global RemObjects.Elements.Languages registry, and merely referencing
+      RemObjects.Elements.Oxygene.dll does not populate it -- without this,
+      construction throws "Unsupported Language: Oxygene". Registering is a
+      process-wide, one-time side effect, hence the guard.
+    }
+    class method EnsureLanguageRegistered;
+    begin
+      if not fLanguageRegistered then begin
+        Languages.Register(new OxygeneLanguage);
+        fLanguageRegistered := true;
+      end;
+    end;
 
     class method Tokenize(aText: String): List<ScanToken>;
     begin
       result := new List<ScanToken>;
-      var offset: Int32 := 0;
-      var safety: Int32 := aText.Length + 16;
-      while (offset < aText.Length) and (safety > 0) do begin
-        dec(safety);
-        var remaining := aText.Substring(offset);
-        var trimmedCheck := remaining.Trim;
-        if (trimmedCheck.Length = 0) or (trimmedCheck = '.') then break;
+      if String.IsNullOrEmpty(aText) then exit;
 
-        SimpleTokenizer.Parse(remaining);
-        if SimpleTokenizer.Items.Count = 0 then break;
-        var t := SimpleTokenizer.Items[0];
-        if t.Length <= 0 then break;
+      EnsureLanguageRegistered;
 
-        var text := remaining.Substring(t.StartPos, t.Length);
-        if (t.Token <> TOK_WHITESPACE) and (t.Token <> TOK_COMMENT) and (t.Token <> TOK_XMLDOC) then begin
-          var st := new ScanToken;
-          st.Id := t.Token;
-          st.Text := text;
-          result.Add(st);
-        end;
-        offset := offset + t.StartPos + t.Length;
+      var stream := new TokenStream(FragmentType.Oxygene, false);
+      stream.SetText(aText);
+
+      {
+        Items is a capacity-sized array, so Count is what bounds the loop
+        -- reading Items.Length would walk past the live fragments.
+      }
+      for i: Int32 := 0 to stream.Count - 1 do begin
+        var frag := stream.Items[i];
+
+        // Every stream ends with a zero-length T_EOF fragment.
+        if frag.Token = TOK_EOF then continue;
+
+        {
+          IsWhitespace already covers whitespace and comment fragments; the
+          explicit ID checks keep the exact filter the scanner had before
+          this went through TokenStream, in case a trivia kind exists that
+          IsWhitespace does not claim.
+        }
+        if frag.IsWhitespace then continue;
+        if (frag.Token = TOK_WHITESPACE) or (frag.Token = TOK_COMMENT) or (frag.Token = TOK_XMLDOC) then continue;
+
+        var st := new ScanToken;
+        st.Id := frag.Token;
+        {
+          GetString() rather than slicing aText: for an &-escaped
+          identifier (&class used as a member name) the tokenizer reports
+          it as T_Identifier with the & already stripped, which is what the
+          reflection side sees as the member name.
+        }
+        st.Text := frag.GetString();
+        result.Add(st);
       end;
     end;
 

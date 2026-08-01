@@ -1200,3 +1200,121 @@ tools/run-tests.ps1              -- 新規: ランナー本体(詳細は下記)
   付随作業になるはずだ。スキャナの作り直しは、まさにこうした限界を
   修正するか、新たにリグレッション用に固定するかのどちらかを行う
   タイミングだからである。
+
+---
+
+## 16. §13あえてやらなかったこと項目3完了: NRTスキャナを本物のトークナイザへ移行 (Windows実機検証、2026-08-02)
+
+**`NullabilityScanner.Tokenize`は`SimpleTokenizer`を使わなくなった。**
+現在は`RemObjects.Elements.Code.TokenStream`を通じて本物のOxygene
+トークナイザを駆動しており、§12.2/§13が指摘していた3つの問題
+(OOMガード、セーフティカウンタ、O(n²)の縮小部分文字列コピー)が
+すべて解消された。既存のスナップショット一式(§15)で出力に変化が
+ないことを検証済みで、加えてトークナイザに敏感な挙動を固定する
+新しいフィクスチャも追加した。
+
+`CLAUDE.md`のモデル選択指針が、このスキャナを名指しでOpus向きの
+コアとして挙げていたことに従い、Sonnet 5ではなくOpus 5で実施した。
+
+### 16.1 §12.2の想定より良かったAPI
+
+§12.2は、この作り直しが`Tokenizer`の生の逐次ステートマシン
+(`Next()`、`CurrTokenID`、`Row`/`Col`)を手で回すことを意味すると
+想定し、それを前提に作業規模を見積もっていた。しかし実際にはその
+必要はなかった: **`RemObjects.Elements.Code.TokenStream`
+(`RemObjects.Elements.Code.dll`ではなく`RemObjects.Elements.dll`に
+ある)は`ViewableList<Fragment>`を継承しており、ファイル全体を1回の
+呼び出しでトークナイズして**、結果を素の配列として公開する。実際に
+使える形は以下の通り:
+
+```
+Languages.Register(new OxygeneLanguage);          // プロセスにつき1回
+var stream := new TokenStream(FragmentType.Oxygene, false);
+stream.SetText(text);                              // ここでトークナイズ、Load()不要
+for i := 0 to stream.Count - 1 do
+  ... stream.Items[i] ...                          // Fragment
+```
+
+- `RemObjects.Elements.Code.Fragment`はpublicな`Token: Int32`、
+  `StartPos: Int32`、`Length: Int32`フィールドに加え、`GetString()`と
+  `IsWhitespace`プロパティを持つ — つまり`SimpleTokenizer`の
+  `TokenValue`が持っていたのと同じ情報だが、1トークンずつではなく
+  入力全体に対して本物のレキサーが生成したものである。
+- **`FragmentType.Oxygene = 1`** がコンストラクタに渡す列挙値。
+- **登録ステップが自明でない部分。** `TokenStream`のコンストラクタは
+  プロセスグローバルな`RemObjects.Elements.Languages`レジストリから
+  プロバイダを解決するが、`RemObjects.Elements.Oxygene.dll`を単に
+  参照するだけではレジストリは埋まらない — 先に
+  `Languages.Register(new OxygeneLanguage)`を呼ばないと、構築時に
+  `System.Exception: Unsupported Language: Oxygene`が投げられる。
+  これは一度きりのグローバルな副作用なので、`NullabilityScanner`は
+  `class var`のフラグでガードしている。
+
+`Tokenize`より下のすべてが引き続きローカルな`ScanToken`のリストに
+対して動作するため、変更は1メソッドと`uses`節のみで済んだ —
+`ScanFile`、`IsTypeOpen`、`FindTypeNameBefore`、`ScanMemberDecl`は
+一切手を入れていない。将来再びトークナイザを差し替えることがあれば、
+このseamは維持する価値がある。
+
+### 16.2 Oxygeneを書く前に実機で確認した挙動
+
+EBuildの往復を繰り返しながら推測で進めるのではなく、セッションの
+scratchpadの使い捨てコンソールアプリからAPIを実行して調べた(§14.1と
+同じ、使い捨てでコミットしない方式):
+
+- `SetText()`だけで`Items`/`Count`が充填される。`Load()`は不要。
+- **すべてのストリームは長さ0の`T_EOF`フラグメントで終わる**ので、
+  スキャナはこれをスキップする必要がある。
+- `Items`は容量分の大きさを持つ配列なので、ループの上限は
+  `Items.Length`ではなく`Count`である。
+- 空白のフラグメントはデフォルトでは一切出力されないが、**コメントの
+  フラグメントは出力され**、`IsWhitespace = true`を伴う。スキャナは
+  `IsWhitespace`に加えて空白/コメント/XMLドキュメントのトークンIDでも
+  明示的にフィルタしており、従来のフィルタを厳密に保っている。
+- **`SimpleTokenizer.Parse`が内部で暴走し「Out of memory」で落ちていた
+  (§12.2)、末尾が改行なしの`"end."`という入力が、ここでは問題なく
+  トークナイズされる**(`TI_end`、`T_Dot`、`T_EOF`の3フラグメント)。
+  よって`remaining.Trim() = '.'`のガードは、移設ではなく削除された。
+- `&`でエスケープされた識別子(メンバー名として使う`&class`)については、
+  トークナイザは`&`をすでに取り除いた状態で`T_Identifier`として報告し、
+  `GetString()`、`GetOriginalString()`、`StartPos`/`Length`による生の
+  スライスの3つすべてが一致する。スキャナは`GetString()`を使っており、
+  これはreflection側がメンバー名として見るものと一致する — 従来の
+  生スライス方式では得られなかった小さな正確性の向上である。
+
+### 16.3 新フィクスチャ: `tests/fixtures/TokenizerEdgeCases`
+
+§15.4の提案に従い、また既存の`SampleModel`フィクスチャが今回の
+作り直しで実際に変わった部分を何一つ演習していないために追加した。
+各メンバーがそれぞれ何を証明するかにちなんだ名前を持つクラスを1つ
+宣言しており、ファイルは**意図的に`end.`で終わり末尾に改行がない** —
+旧スキャナをクラッシュさせていた入力そのものである。
+
+`cases.json`で2ケースを固定している: CLIデフォルトと、
+`--nrt-unknown-policy non-null`。**判別力を持つのは`non-null`の方で
+ある** — デフォルトポリシーでは、`Unknown`なメンバーと、漏れた
+`nullable`を誤って拾ってしまったメンバーの両方が`| null`として
+出力されるため、漏れがあっても気づかないまま通ってしまう。
+`non-null`では`Unknown`は素のまま出力され、本物の注釈だけが`| null`を
+保つので、スナップショットが両者を実際に区別できる。今後NRT関連の
+フィクスチャを追加する際に覚えておく価値がある: デフォルトポリシー
+だけのスナップショットは、これらのフィクスチャが存在する理由そのもの
+であるバグの種類を、まさに隠してしまいうる。
+
+ベースラインとしてコミットする前に、単に「動いたから」ではなく目視で
+正しさを確認した: 行コメント、ブロックコメント、XMLドキュメント
+コメント、および文字列リテラルのデフォルト値の中に現れる
+`nullable`/`not nullable`は、いずれも正しく後続のメンバーに注釈を
+付けず、一方で本物の注釈と複数識別子宣言は引き続き正しく解決される。
+スキャナはこのファイルに対してちょうど5メンバーの注釈を報告し、
+これは本物の注釈の数5と一致する。
+
+### 16.4 これで直っていないこと
+
+§12.6の限界は変わっていない — 今回置き換えたのは*トークンの生成
+方法*であって、それを走査するヒューリスティックではない。ネストした型、
+1つの`type`セクション配下の複数の型、インデクサ形式のプロパティ
+パラメータリストは依然として未対応であり、`ScanFile`は今もパーサでは
+なく深さカウンタによるヒューリスティックのままである。ただしこれらの
+下にはスナップショットの網が張られたので、§15より前と比べれば次に
+着手する対象として安全になっている。
