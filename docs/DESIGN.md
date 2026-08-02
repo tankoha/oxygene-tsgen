@@ -534,14 +534,20 @@ Provider lineup, in priority order:
   as this section's original text implied. As built
   (`src/Tsgen/Nrt/NullabilityScanner.pas`, `HANDOFF.md` §12): an explicitly
   heuristic scanner — not a full parser — scoped to properties and fields of
-  top-level types, using `RemObjects.Elements.Oxygene.SimpleTokenizer` with
-  token-ID constants referenced directly off
-  `RemObjects.Elements.Code.Oxygene.Token` (`HANDOFF.md` §13). Known
-  limitations (nested types, indexer-style properties; method parameter/return
-  NRT deliberately deferred as it doesn't affect the Inertia Page Props shape)
-  are catalogued in `HANDOFF.md` §12.6/§13. Requiring source access adds a
-  `--source <dir>` CLI input alongside `--assembly` — an input the original
-  reflection-only design did not need.
+  top-level types (multiple type declarations may share one `type` section;
+  indexer-style properties are supported, `HANDOFF.md` §18.2/§18.3), using
+  `RemObjects.Elements.Code.TokenStream` to drive the real Oxygene tokenizer
+  (reworked from an earlier `SimpleTokenizer`-based implementation, `HANDOFF.md`
+  §16) with token-ID constants referenced directly off
+  `RemObjects.Elements.Code.Oxygene.Token` (`HANDOFF.md` §13). The one
+  remaining known limitation — nested types — is not just a scanner gap: the
+  Loader filters `IsNested` types out before they reach the IR at all, and the
+  emitter has no nested-`interface` output either, so it needs coordinated
+  changes across three stages, not a scanner-only fix (`HANDOFF.md` §18.1).
+  Method parameter/return NRT is separately deferred as it doesn't affect the
+  Inertia Page Props shape. Both are catalogued in `HANDOFF.md` §12.6/§18.
+  Requiring source access adds a `--source <dir>` CLI input alongside
+  `--assembly` — an input the original reflection-only design did not need.
 - **Provider 2: `RoslynStyleAttributeProvider`** — interprets the standard
   `NullableAttribute`/`NullableContextAttribute`. **Demoted from its original
   "expected to also cover Oxygene assemblies" role**: per §8 it returns Unknown

@@ -30,16 +30,26 @@ type
     closing `end` regardless of how many types share the section.
 
     Known limitation, unchanged: nested types within a single file are not
-    specifically supported -- the OUTER type's name is what "wins" for any
-    member the scanner walks past while still inside a nested type's body
-    (currentTypeName is only assigned once, on the first class/record/
-    interface open). This is currently moot in practice, though: nested
-    types are filtered out entirely by AssemblyLoader (t.IsNested), and
-    DtsEmitter has no nested-interface output either, so a nested type's
-    members never reach the generated .d.ts regardless of what the scanner
-    attributes them to. Supporting nested types for real needs matching
-    changes in AssemblyLoader and DtsEmitter, not just here -- see
-    HANDOFF.md for the decision to leave this out of scope for now.
+    specifically supported -- currentTypeName/typeDepth are only assigned
+    once, on the first class/record/interface open, so a nested type's own
+    members are never attributed to the nested type itself. The
+    (depth = typeDepth) guard on every member-scanning branch (added after
+    a Fable5 review caught this, HANDOFF.md §20) means those members are
+    now correctly IGNORED rather than misattributed to the outer type --
+    earlier reasoning here claimed this gap was harmless because
+    AssemblyLoader filters nested types out (t.IsNested) and DtsEmitter has
+    no nested-interface output, so nested members "never reach the
+    generated .d.ts regardless of what the scanner attributes them to". That
+    was wrong: before the guard, a nested type's annotated member could
+    silently overwrite an OUTER, same-named member's entry in the result
+    dictionary (ScanMemberDecl writes unconditionally), corrupting output
+    that DOES reach the .d.ts -- see tests/fixtures/NestedTypeCollision for
+    the regression case. Supporting nested types FOR REAL (giving a nested
+    type's own members their own output) still needs matching changes in
+    AssemblyLoader and DtsEmitter, not just here -- see HANDOFF.md for the
+    decision to leave that out of scope for now. The point is narrower than
+    it used to be: only "ignore nested-type members without corrupting
+    anything" is guaranteed today, not "attribute them correctly".
 
     Token IDs are read directly off RemObjects.Elements.Code.Oxygene.Token
     (the same public static constants the tokenizer itself uses) rather
@@ -243,7 +253,19 @@ type
           if depth > 0 then dec(depth);
         end
         else if tok.Id = TOK_PROPERTY then begin
-          if (not String.IsNullOrEmpty(currentTypeName)) and (i + 1 < aTokens.Count)
+          {
+            The (depth = typeDepth) guard matters: without it, a "property"
+            token found while inside a NESTED type's body (typeDepth still
+            points at the OUTER type, since currentTypeName/typeDepth are
+            only assigned once per outer type) would get attributed to the
+            outer type anyway. That doesn't just leave the nested member's
+            own annotation unrecorded -- ScanMemberDecl's unconditional
+            aResult[key] := kind can silently overwrite an OUTER member of
+            the same name with the nested member's (opposite) nullability,
+            corrupting output that DOES reach the emitted .d.ts. The field
+            branches below already had this guard; this branch didn't.
+          }
+          if (not String.IsNullOrEmpty(currentTypeName)) and (depth = typeDepth) and (i + 1 < aTokens.Count)
              and (aTokens[i + 1].Id = TOK_IDENTIFIER) then begin
             var memberName := aTokens[i + 1].Text;
             var colonIndex := i + 2;

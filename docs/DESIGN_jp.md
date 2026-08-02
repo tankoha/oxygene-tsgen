@@ -495,12 +495,19 @@ type
   せず、初日からこれを実装した (`HANDOFF.md` §11)。実装の実態
   (`src/Tsgen/Nrt/NullabilityScanner.pas`、`HANDOFF.md` §12): 明示的に
   ヒューリスティックなスキャナ — フルパーサではない — で、トップレベル型の
-  プロパティとフィールドにスコープを絞り、`RemObjects.Elements.Oxygene.
-  SimpleTokenizer` を使用し、トークンID定数は
+  プロパティとフィールドにスコープを絞る(1つの`type`セクションに複数の型
+  宣言が並んでいてもよく、indexer形式のプロパティにも対応している。
+  `HANDOFF.md` §18.2/§18.3)。`RemObjects.Elements.Code.TokenStream`で
+  本物のOxygeneトークナイザを直接駆動しており(以前の`SimpleTokenizer`
+  ベースの実装から刷新済み、`HANDOFF.md` §16)、トークンID定数は
   `RemObjects.Elements.Code.Oxygene.Token` の公開フィールドを直接参照する
-  (`HANDOFF.md` §13)。既知の制限 (ネストした型、インデクサ形式のプロパティ。
-  メソッドのパラメータ/戻り値の NRT は Inertia Page Props の形に影響しない
-  ため意図的に先送り) は `HANDOFF.md` §12.6/§13 に整理してある。ソースへの
+  (`HANDOFF.md` §13)。唯一残っている既知の制限であるnested typesは、
+  単なるスキャナの穴ではない: LoaderがIRに届く前に`IsNested`な型を
+  丸ごと除外しており、Emitter側にもネストした`interface`の出力機構が
+  存在しないため、スキャナ単体ではなく3段階にまたがる協調した変更が
+  必要になる(`HANDOFF.md` §18.1)。メソッドのパラメータ/戻り値の NRT は
+  Inertia Page Props の形に影響しないため別途意図的に先送りしている。
+  両者とも `HANDOFF.md` §12.6/§18 に整理してある。ソースへの
   アクセスが必要になるため、`--assembly` に加えて `--source <dir>` という
   CLI 入力が増える — 元のリフレクションのみの設計には不要だった入力である。
 - **プロバイダ2: `RoslynStyleAttributeProvider`** — 標準の

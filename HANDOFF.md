@@ -1478,6 +1478,14 @@ reach the IR or the emitter regardless of what key the scanner attributes
 them to. Real nested-type support needs coordinated changes across all
 three stages (Loader, IR key format, Emitter), not a scanner-only patch.
 
+> **Correction (§20, 2026-08-02, later same day):** a Fable5 review found
+> the paragraph above overlooked a real path to changed output —
+> misattribution doesn't just orphan the nested type's own (invisible)
+> data, it can silently **overwrite an OUTER, same-named member's**
+> dictionary entry, corrupting output that *does* reach the `.d.ts`. Fixed
+> in §20; see there before relying on this section's "cannot change any
+> generated output" claim.
+
 **User decision (2026-08-02): leave nested types out of scope for this
 round.** `NullabilityScanner.pas`'s header comment was updated to record
 this (why it's currently moot, not just that it's unsupported) instead of
@@ -1665,3 +1673,163 @@ single `AddWarning(aMessage)` method and an `Items` property.
   the post-MVP plugin chain, though no plugin mechanism was added here —
   purely an internal refactor of how the existing two stages report
   problems.
+
+---
+
+## 20. Fable5 review of §18/§19 (commits `b9627df`/`ce1be2d`), and the response (Windows hands-on, 2026-08-02)
+
+User asked for an independent Fable5 review of the two commits behind
+§18/§19, on two explicit axes: internal consistency of what was done, and
+whether the work introduced any *new* inconsistency elsewhere. Review ran
+as a background `general-purpose` agent with `model: fable`, in an
+isolated worktree, with read-only instructions (no fixes, report only).
+Full method: read `CLAUDE.md`, `HANDOFF.md`/`HANDOFF_jp.md` through §19,
+the actual diffs (`git show` on both commits) and current file contents,
+`docs/DESIGN.md`, and the issue-tracker CSV; traced several claims by
+hand rather than only trusting the written record. Did not build/run the
+suite (Trial-license usage-cap caution, `CLAUDE.md` "License
+constraints") — every finding below was verified by static trace, and,
+for finding 1, additionally confirmed hands-on this session (§20.3).
+
+### 20.1 Review outcome
+
+**Question 1 (internal consistency): essentially clean.** EN/JP HANDOFF
+prose, `CLAUDE.md`, the CSV, and the actual code all agreed on every
+substantive point checked (token constants, the `GetItem`/`SetItem`
+rationale, case counts, the dedup message format, `IsTypeOpen` claims,
+etc.) — full detail not reproduced here since nothing needed fixing
+beyond two wording nits (§20.4).
+
+**Question 2 (new inconsistencies): 3 findings**, most severe first:
+
+1. **The §18.1 "scanner-only fix cannot change output" rationale had a
+   real hole.** True that a nested type's *own* data never reaches the
+   emitter (Loader filters `IsNested`, Emitter has no nested-`interface`
+   output) — but misattribution doesn't just orphan that invisible data.
+   `NullabilityScanner`'s `TOK_PROPERTY` branch was missing the `(depth =
+   typeDepth)` guard the field branches already had, so a nested type's
+   annotated property was still attributed to the *outer* type
+   (`currentTypeName` stays the outer type's name inside a nested body),
+   and `ScanMemberDecl`'s unconditional `aResult[key] := kind` write means
+   whichever declaration the scanner walks **last** — outer or nested —
+   wins the shared dictionary key. A nested type's annotation can
+   therefore silently overwrite an outer, same-named member's nullability
+   in output that *does* reach the `.d.ts`. Present in five places making
+   the same overstated claim: `HANDOFF.md`/`HANDOFF_jp.md` §18.1, the
+   `NullabilityScanner.pas` header comment, `CLAUDE.md`, and CSV row 31.
+   The *decision* to leave full nested-type support out of scope was
+   still fine — the *justification* given for why the scanner-only gap
+   was harmless was not. Fixed, see §20.3.
+2. **`docs/DESIGN.md` §4 (and `DESIGN_jp.md`) still listed indexer-style
+   properties as a current scanner limitation**, after §18.2 fixed them,
+   and cited superseded sections (§12.6/§13 instead of §18) plus a stale
+   `SimpleTokenizer` mention (actually superseded back at §16, not
+   introduced by these two commits, but caught by the same read). `b9627df`
+   updated `CLAUDE.md`/`HANDOFF.md` but missed the canonical design doc.
+   Fixed, see §20.2.
+3. **The issue-tracker CSV's phase-numbering column silently changed
+   meaning.** Rows 1–30 use a sequential same-session event counter that
+   does *not* equal HANDOFF section numbers (e.g. phase 8 = §14, phase 10
+   = §16). Rows 31–33 (`b9627df`) and row 22's updated resolution phase
+   (`ce1be2d`) switched to raw HANDOFF section numbers (18, 19) instead,
+   jumping straight from phase 10 to phase 18 with nothing in between.
+   Fixed, see §20.2.
+
+Two minor Q1 wording nits (not inconsistencies between sources, just
+imprecise phrasing) are noted in §20.4.
+
+### 20.2 Fixed: findings 2 and 3 (docs + CSV)
+
+- `docs/DESIGN.md` §4 / `docs/DESIGN_jp.md` §4: rewrote the
+  `OxygeneSourceScanProvider` paragraph to state indexer properties and
+  multi-type sections are supported (§18.2/§18.3), describe the current
+  `TokenStream`-based implementation instead of the superseded
+  `SimpleTokenizer`, restate the nested-types limitation as a
+  Loader+Emitter gap rather than just "a known limitation," and repoint
+  citations at §12.6/§18.
+- `reports/2026-08-02-issue-tracker.csv`: renumbered rows 31–33 from
+  phase 18 to phase **11** (continuing the pre-existing sequential
+  counter — nothing had used 11–17 yet), and row 22's resolution phase
+  from 19 to **12**, matching the same counter (11 = §18's NRT hardening,
+  12 = §19's Diagnostics component). This review's own findings and fixes
+  are logged as phase 13 (discovery, "Fable5レビュー3回目") and phase 14
+  (fixes, "修正対応2") — rows 34–38.
+
+### 20.3 Fixed: finding 1 (the real scanner bug)
+
+Added the missing `(depth = typeDepth)` guard to
+`NullabilityScanner.ScanFile`'s `TOK_PROPERTY` branch
+(`src/Tsgen/Nrt/NullabilityScanner.pas`), matching the guard the field
+branches already had. A `property` token found while `depth` has moved
+past `typeDepth` (inside a nested type's body, or in principle any other
+nested block) is now correctly **ignored** instead of being attributed to
+`currentTypeName` (the outer type).
+
+**New regression fixture: `tests/fixtures/NestedTypeCollision`.** `Outer`
+declares `property Name: nullable String` directly, then a nested `type
+Inner = public class ... property Name: not nullable String ... end;`
+inside its own body — same member name, opposite nullability, with
+`Outer`'s own declaration placed *before* the nested type in the source
+(order matters: `ScanMemberDecl` overwrites unconditionally, so whichever
+declaration is scanned last determines the final dictionary value; this
+ordering is what makes the corruption actually observable rather than
+accidentally masked).
+
+Verified both directions hands-on, not just "tests pass" — confirmed the
+fixture actually discriminates buggy from fixed behavior before trusting
+it as a snapshot baseline:
+- `git stash` (temporarily reverting the guard), rebuilt, ran `tsgen`
+  directly: `Outer.Name` came back as bare `string` — **wrongly** losing
+  `| null`, corrupted by `Inner`'s `not nullable` annotation. Confirmed
+  the fixture reproduces the bug.
+- `git stash pop` (restoring the guard), rebuilt, ran `tsgen` again:
+  `Outer.Name` correctly came back as `string | null` under *both*
+  `--nrt-unknown-policy` settings (proving it's the explicit annotation
+  surviving, not an Unknown-policy fallback coincidence). Locked in as
+  the `expected/*.d.ts` snapshot via `tools/run-tests.ps1
+  -UpdateSnapshots` only after this manual confirmation.
+
+Full suite: `tools/run-tests.ps1` — **8/8 cases pass** across all four
+fixtures (`MultiTypeAndIndexer`, `NestedTypeCollision`, `SampleModel`,
+`TokenizerEdgeCases`); `git diff` on the three pre-existing fixtures'
+snapshots is empty (no regressions from the guard addition).
+
+**Rationale corrected in all five places** the overstated claim appeared:
+`NullabilityScanner.pas`'s header comment now explains the guard and
+narrows the claim to "nested-type members are ignored without corrupting
+anything" rather than "nested-type members never affect output" (the
+latter was only ever true for the Loader/Emitter path, not the scanner's
+own dictionary). `HANDOFF.md`/`HANDOFF_jp.md` §18.1 got an inline
+correction blockquote pointing here rather than being silently rewritten
+(preserves what was actually believed at the time; §14/§9.4's "resolved"
+pattern is the precedent for this). `CLAUDE.md`'s nested-types paragraph
+and CSV row 31 (via the new row 34, §20.2) were updated directly since
+they're living status, not a dated log entry.
+
+### 20.4 Two minor Q1 wording nits, also fixed
+
+- `CLAUDE.md`'s Diagnostics paragraph read as if `Program.pas` performs
+  the unmapped-type dedup; it's actually `DtsEmitter.Emit` that groups by
+  CLR type name, and `Program.pas` only prints the already-deduplicated
+  result. Reworded.
+- CSV row 32's Japanese description said "ブレース深度" (brace depth,
+  `{}`) where the code actually tracks bracket depth (`[]`) — should have
+  been "ブラケット". Also tightened "property直後がColon" to specify
+  "プロパティ名直後" (immediately after the property *name*, not the
+  `property` keyword itself), matching what both HANDOFF language
+  versions already said correctly. Fixed directly in row 32 (not a new
+  row — a wording-only correction to already-accurate content, unlike
+  §20.2/§20.3's rows which needed a distinct "what was wrong, what fixed
+  it" record).
+
+### 20.5 What this does not change
+
+- Nested types are still out of scope for *real* support (a nested
+  type's own members getting their own output). §20.3 only fixes the
+  scanner's dictionary-corruption side effect on OUTER members — it does
+  not make `AssemblyLoader` stop filtering `IsNested` types or give
+  `DtsEmitter` a nested-`interface` output path. That remains the
+  three-stage task described in §18.1.
+- No change to `DiagnosticList`, the Diagnostics component's own design,
+  or anything in §19 beyond the `CLAUDE.md` wording nit in §20.4 — the
+  review found §19's substance sound.
