@@ -1468,7 +1468,7 @@ Before touching the scanner, checked what `AssemblyLoader.pas` and
 `DtsEmitter.pas` actually do with nested types, rather than assuming the
 scanner's own doc comment (which blamed itself) was the whole story.
 **`AssemblyLoader.Load` filters out every `t.IsNested` type before it
-ever reaches `RawAssembly`** (`AssemblyLoader.pas:26`, part of the §13
+ever reaches `RawAssembly`** (`AssemblyLoader.pas:27`, part of the §13
 "skipped non-public/nested/generic/unsupported-kind types" warning), and
 **`DtsEmitter` has no nested-`interface`-in-`interface` output path at
 all** — only namespace-level nesting (`declare namespace { ... }`).
@@ -1734,6 +1734,15 @@ beyond two wording nits (§20.4).
    (`ce1be2d`) switched to raw HANDOFF section numbers (18, 19) instead,
    jumping straight from phase 10 to phase 18 with nothing in between.
    Fixed, see §20.2.
+
+Also flagged as trivial (Q2): §18.1's `AssemblyLoader.pas:26` citation
+for the `IsNested` filter was accurate when §18 was written, but
+`ce1be2d` added a `Tsgen.Diagnostics` line to the `uses` clause, shifting
+the filter to line 27 — off by one since. Fixed in both `HANDOFF.md` and
+`HANDOFF_jp.md` (the only two places citing it) as part of this section's
+own edits, addressed in a follow-up pass after the rest of §20 landed
+(user caught it hadn't actually been done despite being listed as a
+"trivial" finding).
 
 Two minor Q1 wording nits (not inconsistencies between sources, just
 imprecise phrasing) are noted in §20.4.
