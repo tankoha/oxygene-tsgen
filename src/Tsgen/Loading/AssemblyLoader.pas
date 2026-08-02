@@ -4,12 +4,13 @@ uses
   System.Collections.Generic,
   System.IO,
   System.Reflection,
-  System.Runtime.InteropServices;
+  System.Runtime.InteropServices,
+  Tsgen.Diagnostics;
 
 type
   AssemblyLoader = public static class
   public
-    class method Load(aAssemblyPath: String): RawAssembly;
+    class method Load(aAssemblyPath: String; aDiagnostics: DiagnosticList): RawAssembly;
     begin
       var fullPath := Path.GetFullPath(aAssemblyPath);
       var runtimeDir := RuntimeEnvironment.GetRuntimeDirectory();
@@ -66,7 +67,7 @@ type
         end;
 
         if skippedCount > 0 then
-          writeLn('Warning: skipped ' + skippedCount.ToString() + ' non-public/nested/generic/unsupported-kind type(s); their members will not appear in the output.');
+          aDiagnostics.AddWarning('skipped ' + skippedCount.ToString() + ' non-public/nested/generic/unsupported-kind type(s); their members will not appear in the output.');
       end;
     end;
   end;

@@ -1509,3 +1509,96 @@ Unknownにフォールバックした」こと(Unknownならデフォルトポ�
   パーサーではない。今回はそれが認識できるメンバー宣言の「形」
   (indexer)を広げただけで、根底にあるネスト/型追跡モデル自体は
   変えていない。
+
+---
+
+## 19. Diagnosticsコンポーネントを追加: `DtsEmitter.Emit`/`AssemblyLoader.Load`を再び純粋関数に(Windows実機検証、2026-08-02)
+
+課題管理表(`reports/2026-08-02-issue-tracker.csv`)の項目#22を解決。
+§13のレビュー後修正パスで指摘され、その場では直さず「将来
+Diagnosticsコンポーネントを実装するとき」に先送りしていたもの。
+ユーザーが次にこれを選び、最小限のstderrだけのパッチではなく、
+本格的なDiagnosticsコンポーネントの導入を希望した — CSVの当該行の
+文言自体(「将来Diagnosticsコンポーネント実装時に」)がどちらの
+選択肢も開いたままにしていたので、決め打ちせず着手前にユーザーに
+確認を取った。
+
+### 19.1 実際に何が非純粋だったか、なぜ問題だったか
+
+`AssemblyLoader.Load`(Stage 1)と`DtsEmitter.Emit`(Stage 4)は
+どちらも警告のために`writeLn`を直接呼んでいた(スキップした型数、
+未マッピングCLR型のフォールバック)— `docs/DESIGN.md`のパイプライン
+設計は各ステージを単体でテスト・合成できる純粋なデータ変換として
+扱う前提だったにもかかわらず。純粋性の問題そのものに加え、
+未マッピング型の警告には実際のノイズ問題もあった: *メンバーごと*に
+1回出力していたため、1つのカスタムPOCO型が多数のプロパティで使われる
+(Inertia Page Propsのユースケース(§6)では現実的な形)と、根本原因を
+1回だけ表示するのではなく、ほぼ同じ行がコンソールを埋め尽くして
+いた。
+
+### 19.2 追加したもの
+
+新規ファイル `src/Tsgen/Diagnostics/Diagnostics.pas`
+(`Tsgen.Diagnostics`名前空間、`Tsgen.elements`の`Compile`リストの
+先頭に追加 — `AssemblyLoader`/`DtsEmitter`/`Program`が全てこれに
+依存するようになったため): `DiagnosticSeverity`列挙型(今のところ
+`Warning`のみ)、`Diagnostic`クラス(`Severity` + `Message`)、
+単一の`AddWarning(aMessage)`メソッドと`Items`プロパティを持つ
+`DiagnosticList`収集クラス。
+
+- `AssemblyLoader.Load`は`aDiagnostics: DiagnosticList`引数を
+  新たに受け取るようになった。スキップした型数の警告は`writeLn`では
+  なく`aDiagnostics.AddWarning(...)`経由になった。
+- `DtsEmitter.Emit`も同じ引数を受け取る。未マッピング型の警告は
+  まず「集約」する形に再構成した: `EmitType`が新たに2つの引数を
+  受け取る — CLR型名をキーとする`Dictionary<String, List<String>>`
+  (値はそれを使っている`"Type.Member"`の一覧)と、初出順を記録する
+  `List<String>`(`Emit`内に既にある`byNamespace`/`order`ペアと
+  同じ「Dictionaryのイテレーション順に依存しない」という理由に基づく
+  もので、新規に持ち込んだのではなく既存の流儀を踏襲)。全ての型の
+  出力が終わった後、`Emit`が`unmappedOrder`を1回だけ走査し、
+  未マッピング型ごとに1つの診断を追加する。例:
+  `"no type mapping for DiagProbe.Widget, emitting \"unknown\"
+  (3 member(s), e.g. Holder.A)"`。
+- `Program.pas`(CLIのエントリーポイントであり、自身の進捗行を除いて
+  コンソールに触れることが許される唯一の場所)が`DiagnosticList`を
+  1つ生成し、`AssemblyLoader.Load`と`DtsEmitter.Emit`の両方に
+  引き回す。既存の「`--source`未指定」警告もこれ経由にした
+  (これまでは独自の`writeLn`直接呼び出しだったが、他の2つと
+  統一)。集約された診断は、すべての処理が終わった最後に(「Wrote
+  ...」行の後で)まとめて1回、`Console.Error.WriteLine('Warning: ' +
+  d.Message)`経由で出力される — stdoutではなく**stderr**へ。進捗の
+  ナレーションと警告を分離している。`Console.Error`を使うため
+  `Program.pas`の`uses`節に`System`の追加が必要だった。
+
+### 19.3 検証
+
+- `tools/dev-build.ps1`: クリーンビルド、新規警告なし。
+- `tools/run-tests.ps1`: 3フィクスチャ全体で6/6ケースが引き続き
+  パス。`.d.ts`の出力はバイト単位で変更前と同一(diagnosticsは
+  生成ファイルの内容には触れず、警告の出力先・出力方法のみ変更)。
+- 使い捨てのscratchpadフィクスチャ(リポジトリにはコミットしない —
+  §14.1/§16.2/§18.2と同じ使い捨てプローブの流儀)による重複排除の
+  実機確認: 3つのプロパティ(`Holder.A`/`B`/`C`)のプロパティ型として
+  使われる未マッピングのカスタム型`Widget`。この変更前なら実行中に
+  ほぼ同一の`writeLn`行が3回出力されていたはずのところ、新しい
+  ビルドではstderrにちょうど**1行**だけ出力されることを確認した
+  (目視だけでなく`2>stderr.txt`のリダイレクトで検証):
+  `Warning: no type mapping for DiagProbe.Widget, emitting "unknown"
+  (3 member(s), e.g. Holder.A)`。
+
+### 19.4 設計/タスクリストへの影響
+
+- 課題管理表の項目#22は解決 — `AssemblyLoader.Load`と
+  `DtsEmitter.Emit`は再び純粋関数になった(データと
+  `DiagnosticList`を結果として返すのみで、直接のI/Oはない)。
+  `docs/DESIGN.md`のパイプラインステージ設計の意図に合致する。
+- `DiagnosticSeverity`は今のところ`Warning`のみ。将来
+  `Error`/`Info`が必要になったステージが出てきたら、`writeLn`に
+  逆戻りするのではなく、この列挙型と`DiagnosticList`を拡張する
+  のが正しい継ぎ目である。
+- これは`docs/DESIGN.md` §6がpost-MVPのpluginチェーン向けに
+  スケッチしている`IEmitterExtension`/diagnostics寄りの拡張点にも
+  わずかに近づくものだが、pluginの仕組み自体は今回追加していない —
+  純粋に、既存の2ステージが問題をどう報告するかという内部的な
+  リファクタリングである。

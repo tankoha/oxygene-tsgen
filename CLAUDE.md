@@ -89,6 +89,17 @@ priority chain wins" pattern as the type mapper: `ITypeMappingRule`,
 `INullabilityProvider`, `INamingStrategy`, `ISchemaBackend`,
 `IEmitterExtension` (see `docs/DESIGN.md` §6).
 
+**Pipeline stages report problems via `Tsgen.Diagnostics`, not direct
+console I/O.** `AssemblyLoader.Load` and `DtsEmitter.Emit` both take a
+`DiagnosticList` parameter and call `.AddWarning(...)` instead of
+`writeLn` — this keeps them pure data transforms (matching the pipeline
+design above), and lets `Program.pas` (the CLI entry point, the only
+place allowed to touch the console beyond its own progress lines)
+deduplicate and print everything together, once, to stderr at the end.
+`DtsEmitter.Emit` specifically collapses repeated warnings about the same
+unmapped CLR type across many members into one line. See `HANDOFF.md`
+§19 for why this was added and how it works.
+
 ## Known unresolved technical risk
 
 **Resolved 2026-08-01** (hands-on verification, see `HANDOFF.md` §8):

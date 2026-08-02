@@ -1574,3 +1574,94 @@ regression from the `TOK_PROPERTY` branch rewrite.
   only extended what member-declaration *shapes* it recognizes
   (indexers), it didn't change the underlying nesting/type-tracking
   model.
+
+---
+
+## 19. Diagnostics component added: `DtsEmitter.Emit`/`AssemblyLoader.Load` are pure again (Windows hands-on, 2026-08-02)
+
+Resolves issue-tracker item #22 (`reports/2026-08-02-issue-tracker.csv`),
+flagged during §13's post-review pass and left for "when a Diagnostics
+component gets implemented" rather than fixed inline at the time. User
+picked this up next, and asked for the full fix (a real Diagnostics
+component) rather than a minimal stderr-only patch — the CSV row's own
+wording ("将来Diagnosticsコンポーネント実装時に") had left both options
+open, so this was confirmed with the user before starting rather than
+assumed.
+
+### 19.1 What was actually impure, and why it mattered
+
+`AssemblyLoader.Load` (Stage 1) and `DtsEmitter.Emit` (Stage 4) both
+called `writeLn` directly for warnings (skipped-type count; unmapped CLR
+type fallback), even though `docs/DESIGN.md`'s pipeline design treats
+every stage as a pure data transform so they can be composed/tested in
+isolation. Beyond the purity complaint itself, the unmapped-type warning
+had a real noise problem: it printed once per *member*, so a single
+custom POCO type used across many properties (a realistic shape for the
+Inertia Page Props use case, §6) would flood the console with one
+near-identical line per occurrence instead of surfacing the underlying
+issue once.
+
+### 19.2 What was added
+
+New file `src/Tsgen/Diagnostics/Diagnostics.pas` (`Tsgen.Diagnostics`
+namespace, added to `Tsgen.elements`'s `Compile` list first, since
+`AssemblyLoader`/`DtsEmitter`/`Program` all now depend on it): a
+`DiagnosticSeverity` enum (`Warning` only for now), a `Diagnostic` class
+(`Severity` + `Message`), and a `DiagnosticList` collector class with a
+single `AddWarning(aMessage)` method and an `Items` property.
+
+- `AssemblyLoader.Load` now takes an `aDiagnostics: DiagnosticList`
+  parameter; the skipped-type-count warning goes through
+  `aDiagnostics.AddWarning(...)` instead of `writeLn`.
+- `DtsEmitter.Emit` now takes the same parameter. The unmapped-type
+  warning was restructured to *collect* first: `EmitType` takes two new
+  params, a `Dictionary<String, List<String>>` keyed by CLR type name
+  (value = list of `"Type.Member"` locations using it) and a
+  `List<String>` recording first-seen key order (same "don't rely on
+  Dictionary iteration order" rationale the existing `byNamespace`/`order`
+  pair in `Emit` already used, kept consistent rather than introduced
+  fresh). After all types are emitted, `Emit` walks `unmappedOrder` once
+  and adds one diagnostic per unique unmapped type, e.g. `"no type
+  mapping for DiagProbe.Widget, emitting \"unknown\" (3 member(s), e.g.
+  Holder.A)"`.
+- `Program.pas` (the CLI entry point, the only place now allowed to touch
+  the console for anything beyond its own progress lines) creates one
+  `DiagnosticList`, threads it through `AssemblyLoader.Load` and
+  `DtsEmitter.Emit`, and also routes the pre-existing "`--source` not
+  given" warning through it (previously its own direct `writeLn`, now
+  consistent with the other two). All collected diagnostics are printed
+  together, once, at the very end (after the "Wrote ..." line) via
+  `Console.Error.WriteLine('Warning: ' + d.Message)` — to **stderr**, not
+  stdout, separating warnings from the progress narration. Needed adding
+  `System` to `Program.pas`'s `uses` clause for `Console.Error`.
+
+### 19.3 Verification
+
+- `tools/dev-build.ps1`: clean build, no new warnings.
+- `tools/run-tests.ps1`: 6/6 cases across all three fixtures still pass,
+  `.d.ts` output byte-identical to before (diagnostics don't touch
+  generated file content, only where/how warnings are printed).
+- Hands-on dedup check with a disposable scratchpad fixture (not
+  committed — same throwaway-probe convention as §14.1/§16.2/§18.2): a
+  `Widget` class used as the property type of three properties
+  (`Holder.A`/`B`/`C`) on an unmapped custom type. Before this change
+  that would have printed three near-identical `writeLn` lines mid-run;
+  confirmed the new build instead prints exactly **one** line to stderr
+  (verified via `2>stderr.txt` redirection, not just visual inspection):
+  `Warning: no type mapping for DiagProbe.Widget, emitting "unknown" (3
+  member(s), e.g. Holder.A)`.
+
+### 19.4 Impact on the design / task list
+
+- Issue-tracker item #22 is resolved — `AssemblyLoader.Load` and
+  `DtsEmitter.Emit` are pure functions again (data + `DiagnosticList` in
+  results, no direct I/O), matching `docs/DESIGN.md`'s pipeline-stage
+  design intent.
+- `DiagnosticSeverity` only has `Warning` today; if a future stage needs
+  `Error`/`Info`, the enum and `DiagnosticList` are already the seam to
+  extend rather than reaching for `writeLn` again.
+- This also nudges the codebase slightly closer to the `IEmitterExtension`
+  /diagnostics-adjacent extension points `docs/DESIGN.md` §6 sketches for
+  the post-MVP plugin chain, though no plugin mechanism was added here —
+  purely an internal refactor of how the existing two stages report
+  problems.

@@ -1,12 +1,14 @@
 namespace Tsgen.Cli;
 
 uses
+  System,
   System.Collections.Generic,
   System.IO,
   Tsgen.Loading,
   Tsgen.Nrt,
   Tsgen.Ir,
-  Tsgen.Emit;
+  Tsgen.Emit,
+  Tsgen.Diagnostics;
 
 type
   Program = class
@@ -57,8 +59,10 @@ type
         exit(1);
       end;
 
+      var diagnostics := new DiagnosticList;
+
       writeLn('Loading assembly: ' + assemblyPath);
-      var raw := AssemblyLoader.Load(assemblyPath);
+      var raw := AssemblyLoader.Load(assemblyPath, diagnostics);
       writeLn('Loaded ' + raw.Types.Count.ToString() + ' type(s).');
 
       var nullability := new Dictionary<String, NullabilityKind>;
@@ -68,10 +72,10 @@ type
         writeLn('Found nullability info for ' + nullability.Count.ToString() + ' member(s).');
       end
       else
-        writeLn('Warning: --source not given; all members will fall back to --nrt-unknown-policy (no explicit NRT info available).');
+        diagnostics.AddWarning('--source not given; all members will fall back to --nrt-unknown-policy (no explicit NRT info available).');
 
       var ir := IrBuilder.Build(raw, nullability);
-      var dts := DtsEmitter.Emit(ir, chosenEnumStyle, unknownPolicy);
+      var dts := DtsEmitter.Emit(ir, chosenEnumStyle, unknownPolicy, diagnostics);
 
       if not Directory.Exists(outDir) then
         Directory.CreateDirectory(outDir);
@@ -79,6 +83,18 @@ type
       File.WriteAllText(outPath, dts);
 
       writeLn('Wrote ' + outPath);
+
+      {
+        All warnings are printed together, at the end, to stderr -- not
+        interleaved with the stdout progress lines above. Keeps
+        AssemblyLoader.Load/DtsEmitter.Emit pure (they only return data +
+        diagnostics; Program is the one place that actually prints) and
+        means a warning about the same underlying issue across many
+        members appears once, not scattered mid-run. See Tsgen.Diagnostics.
+      }
+      for each d in diagnostics.Items do
+        Console.Error.WriteLine('Warning: ' + d.Message);
+
       exit(0);
     end;
   end;

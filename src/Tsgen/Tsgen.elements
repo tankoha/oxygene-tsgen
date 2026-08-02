@@ -31,6 +31,7 @@
       <HintPath>C:\Program Files (x86)\RemObjects Software\Elements\Bin\RemObjects.Elements.Oxygene.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Compile Include="Diagnostics\Diagnostics.pas" />
     <Compile Include="Loading\RawModel.pas" />
     <Compile Include="Loading\AssemblyLoader.pas" />
     <Compile Include="Nrt\NullabilityScanner.pas" />

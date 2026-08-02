@@ -20,7 +20,7 @@ No.,発見フェーズ#,発見フェーズ名,発見元,カテゴリ,重要度,�
 19,4,Fable5レビュー1回目,Fable5,運用リスク(ライセンス),高,Trial版3日間使用上限の確認が未解決のまま、継続的にEBuildを使い続けている,ライセンス全体(HANDOFF §9.2),未対応,,,ベンダー確認またはライセンス購入が必要(コード対応では解決しない)
 20,4,Fable5レビュー1回目,Fable5,ドキュメント負債,中,DESIGN.md §4/§10.1/§11が実機検証結果と乖離し、3箇所で状態が分散,docs/DESIGN.md,修正済み,7,DESIGN.md §4書き直し,§4を全面書き直し、§10.1/§11項目1も同様に更新(Fable5に依頼)
 21,6,Fable5レビュー2回目(検証),Fable5,対応漏れ,中,「RemObjectsへのdeps.json不具合報告」が「対応済み」にも「あえてやらない」リストにも入らず欠落,HANDOFF.md §13,修正済み,6,Fable5レビュー2回目(検証),先送りリストに明示的に追記
-22,6,Fable5レビュー2回目(検証),Fable5,設計上の副作用,低,警告出力のためDtsEmitter.Emitが純粋関数でなくなった。将来のDiagnostics実装時に要対応,DtsEmitter.pas,先送り,,,Diagnosticsコンポーネント実装時にstderr化+重複排除を検討
+22,6,Fable5レビュー2回目(検証),Fable5,設計上の副作用,低,警告出力のためDtsEmitter.Emitが純粋関数でなくなった。将来のDiagnostics実装時に要対応,DtsEmitter.pas,修正済み,19,Diagnosticsコンポーネント導入,"新規Tsgen.Diagnostics(DiagnosticList)を追加しAssemblyLoader.Load/DtsEmitter.Emitを共に純粋関数化。DtsEmitter側は未マッピング型ごとに警告を集約(重複排除)し、Program.pasが最後にまとめてstderrへ出力するよう変更"
 23,6,Fable5レビュー2回目(検証),Fable5,ドキュメント表現,低,「スナップショットテストを先にやるという助言はもう意味がない」という誤解を招く表現,HANDOFF.md §13,修正済み,6,Fable5レビュー2回目(検証),「今回はたまたま切り抜けただけ」という文言に修正
 24,6,Fable5レビュー2回目(検証),Fable5,検証範囲の限界,低,日英ドキュメントの同期はスポットチェックのみで全行監査ではない旨の注記,HANDOFF_jp.md,未対応,,,参考情報として記録のみ。必要に応じて全行監査を実施
 25,8,metadata.fx調査,自己(調査),調査結果(否定的),中,"metadata.fxはROSF形式の独自リソースとして実在するが、NRT情報は含まれない(not nullable/nullableでレコードのバイト構造が完全に同一、System.String型エントリも1つを共有)",metadata.fxリソース(§9.4の手がかり),解決済み,8,metadata.fx調査,§8.3のTokenizerスキャン方針が唯一の実装経路であると確定。設計変更なし
