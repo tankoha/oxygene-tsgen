@@ -2374,3 +2374,225 @@ instead if a literal sample is really needed.
   since it was cheap and explicitly named in `docs/DESIGN.md` §2.2, but
   nothing yet *produces* an async-wrapped member to exercise it against
   — no fixture coverage for this specific branch yet.
+
+---
+
+## 24. Inertia.Render entry-point scanner implemented (`--mode inertia`) (Windows hands-on, 2026-08-02)
+
+Implements the mechanism the §22 spike confirmed viable — this is
+`docs/DESIGN.md` §3.5 (entry-point-driven type discovery) for real,
+resolving the "top-priority technical validation item" `docs/DESIGN.md`
+§11 item 8 flagged. User confirmed the v1 scope up front: literal /
+identifier / non-generic `new NamedType(...)` value expressions resolve;
+`new class(...)` anonymous-literal prop values fall back to `unknown` +
+a diagnostic rather than being supported this round (synthesizing an
+on-the-fly named IR type for them is a distinct, larger piece of work,
+deferred).
+
+### 24.1 Shared tokenizer extracted first
+
+Before writing the new scanner, extracted `NullabilityScanner`'s
+`ScanToken`/`Tokenize`/`EnsureLanguageRegistered` into a new
+`src/Tsgen/Nrt/OxygeneTokenizer.pas` (`Tsgen.Nrt.OxygeneTokenizer`,
+`Tsgen.Nrt.ScanToken`) — real, current duplication (both scanners need
+the exact same `TokenStream`-over-a-whole-file setup) rather than
+speculative reuse, so factoring it out first was the right call, not
+premature abstraction. `NullabilityScanner.Scan` now calls
+`OxygeneTokenizer.Tokenize` instead of a private copy; behavior
+unchanged, confirmed by the full suite still passing before writing any
+new code.
+
+### 24.2 `InertiaScanner` (`src/Tsgen/Inertia/InertiaScanner.pas`)
+
+Per §22.3's finding that Oxygene has no working object/collection-
+initializer syntax, the *only* pattern real code can produce is
+sequential indexer assignment:
+
+```pascal
+var props := new InertiaProps;
+props['User'] := aUser;
+props['IsAdmin'] := true;
+result := Inertia.Render('pages/Profile', props);
+```
+
+So the scanner's job, within each `method ... begin ... end;` body
+(constructors and bodyless/interface method declarations are not
+tracked — v1 scope), is to:
+
+1. Track parameter declared types (from the `method Name(...)` header)
+   and local variable declared types (from `var x := new T;` / `var x:
+   T := ...;`), resolved via a small BCL-alias table (`String` →
+   `System.String`, etc.) plus a short-name lookup into the target
+   assembly's own types (built once from `RawAssembly.Types`).
+2. Recognize a local variable as a "props candidate" when its resolved
+   written type name is literally `InertiaProps` or `Dictionary`
+   (string match on the type name as written — good enough since these
+   are the only two type shapes InertiaNetCore's `Render` accepts,
+   §22.1).
+3. For every `propsCandidate['key'] := valueExpr;` statement, resolve
+   `valueExpr`'s type — literal (string/integer/real/`true`/`false`),
+   a plain identifier (looked up in the tracked parameter/local symbol
+   table), or `new NamedType` / `new NamedType(...)` (non-generic only)
+   — appending one field to that variable's accumulated list, or (if
+   unresolvable) adding a `Tsgen.Diagnostics` warning naming the key and
+   falling back to a placeholder "(unresolved)" type that maps to
+   `unknown`.
+4. On `Inertia.Render('component', propsVar)`, emit an
+   `InertiaPageProps` using `propsVar`'s accumulated fields (or, for
+   `Inertia.Render('component')` with no second argument, a legitimate
+   zero-field page); an unresolvable second argument (a method call, an
+   inline expression, a variable never seen as a props candidate) warns
+   and skips that call site rather than emitting a wrong/incomplete page
+   silently.
+
+**Found and fixed while building the fixture, not while designing**:
+the "new NamedType(...)" matcher initially required parentheses, but
+Oxygene allows a no-arg constructor call with no parens at all (`new
+MetaDto;` — confirmed already working elsewhere in this codebase, e.g.
+`result := new InertiaResponse;` in the §22 spike probe). Without
+handling the 2-token `new Identifier` shape explicitly, this is a
+realistically common pattern that would have silently resolved to
+`unknown` instead of the real type. Fixed before it shipped, caught by
+building a fixture that actually used the no-parens form rather than
+only the with-parens one.
+
+Token IDs needed beyond what `NullabilityScanner` already used
+(`TI_method=243`, `TI_new=247`, `T_Assignment=132`, `T_String=170`,
+`T_Integer=160`, `T_Real=161`, `TI_true=273`, `TI_false=224`) were
+confirmed by reflecting on `RemObjects.Elements.Code.Oxygene.Token`'s
+public static fields and by tokenizing throwaway snippets, same
+verify-don't-guess discipline as every prior token-ID confirmation this
+project has done (§7.2, §12.2, §16.1, §18.2). String literals are
+single-quoted, Pascal-style (`''` escapes a literal quote); neither
+`GetString()` nor `GetOriginalString()` unquotes them — confirmed
+hands-on — so `UnquoteStringLiteral` strips the outer quotes and
+un-escapes `''` to `'` manually.
+
+### 24.3 `InertiaIrBuilder` (`src/Tsgen/Inertia/InertiaIrBuilder.pas`) — reachability BFS
+
+`Tsgen.Ir.IrBuilder` was split into three pieces first
+(`BuildProviders`, `BuildType`, `Build` — the last now just calls the
+first two in a loop) so `InertiaIrBuilder` could reuse the identical
+per-type NRT-resolution logic instead of duplicating it — the only new
+piece needed was *which* types to convert, not *how*.
+
+Given the scanner's output (a list of pages, each a list of `(key,
+RawTypeRef)` fields), building the final `IrAssemblyLite` is: (1) index
+`RawAssembly.Types` by `FullName`; (2) seed a BFS queue/`HashSet<String>`
+from every field's `RawTypeRef` (recursing through arrays/generic
+arguments to find leaf named-type references, reusing the exact
+unwrapping shape `TypeMapper.MapTypeRef` already needs); (3) drain the
+queue, and for each reachable type's own members, repeat step 2 —
+this is `docs/DESIGN.md` §3.2 step ①'s edge-collection, minus the SCC
+decomposition (still deliberately deferred, §23.1) and scoped to start
+from an ad-hoc root set instead of "every type," rather than a new
+algorithm; (4) `IrBuilder.BuildType` each reachable `RawType`, in
+`aRaw.Types`'s own order (not the `HashSet`'s iteration order — not a
+contract to rely on, same rationale used elsewhere in this codebase);
+(5) synthesize one `IrTypeLite` interface per page, resolving each
+field's `Nullability` through the *same* provider chain via
+`NullabilityProviderChain.Resolve` with an empty type-name key (a
+synthesized Props type has no real reflected member for
+`OxygeneSourceScanProvider`'s dictionary to match against — it correctly
+returns `Unknown`, and `ValueTypeDefaultProvider` still resolves
+value-typed/`Nullable<T>` fields correctly from the `RawTypeRef` alone,
+regardless of the key).
+
+**Found and fixed while inspecting actual output, not while designing**:
+the first working version gave synthesized Props types
+`NamespaceName := ''`, which `DtsEmitter` — correctly, per its existing
+logic — renders as a **bare top-level `export interface`**, not wrapped
+in `declare namespace`. A `.d.ts` file mixing a bare top-level `export`
+with `declare namespace` blocks stops being a pure global-ambient
+declarations file the moment that `export` appears — TypeScript treats
+the presence of any top-level `import`/`export` as making the *whole
+file* a module, silently changing how every other namespace in the same
+file is consumed by downstream code. Fixed by giving all synthesized
+Props types a shared `'Props'` namespace instead of no namespace at
+all — a placeholder grouping choice, not a settled convention (see
+§24.5). This was caught by reading the actual generated `.d.ts` output
+by eye before locking in the fixture, not by any automated check — worth
+remembering as a category of bug (structurally-valid-per-type-but-
+wrong-when-combined output) unit-level review doesn't catch.
+
+### 24.4 CLI wiring
+
+`Program.pas` gained `--mode assembly|inertia` (default `assembly`,
+preserving all existing behavior byte-for-byte — confirmed via the full
+suite passing unchanged before this section's fixture was even added).
+`--mode inertia` requires `--source` (hard error otherwise: entry-point
+discovery has nothing to scan without it) and branches to
+`InertiaScanner.Scan` + `InertiaIrBuilder.Build` in place of
+`AssemblyLoader`'s implicit whole-assembly `IrBuilder.Build` path;
+`NullabilityScanner.Scan` still runs identically either way (both modes
+need the same NRT dictionary).
+
+### 24.5 New fixture: `tests/fixtures/InertiaMode`
+
+One controller method with one `Inertia.Render` call, covering every
+resolved/unresolved shape in one pass: `User: UserDto` (identifier
+referencing a parameter — and `UserDto.Role: RoleDto` makes `RoleDto`
+reachable *only* transitively, proving the BFS actually walks member
+references, not just direct page-field references), `IsAdmin: true`
+(literal → value type → auto-non-nullable via `ValueTypeDefaultProvider`,
+no `--nrt-unknown-policy` involvement at all), `Bio: 'hello'` (string
+literal), `Meta: new MetaDto` (the no-parens constructor form from
+§24.2), and `Note: SomeHelper()` (a method call — deliberately
+unresolvable, proving the diagnostic-and-`unknown` fallback rather than
+a crash or a wrong guess). `UnusedDto` is declared but referenced by
+nothing reachable, proving the BFS filter actually filters instead of
+just falling back to whole-assembly behavior. Two cases (`default`,
+`non-null`) confirm the reachable types (`RoleDto`/`UserDto`/`MetaDto`)
+and the synthesized `Props.ProfileProps` interface both correctly track
+`--nrt-unknown-policy`, while `IsAdmin` stays non-nullable under both.
+
+Verified hands-on before locking in snapshots (same discipline as every
+fixture this session): ran `tsgen --mode inertia` directly, read the
+output by eye — this is what caught the namespace bug in §24.3 — then
+`tools/run-tests.ps1 -UpdateSnapshots` followed by plain
+`tools/run-tests.ps1`. **14/14 cases pass** across all six fixtures;
+`git diff` on the five pre-existing fixtures' snapshots is empty — the
+`--mode` addition, `IrBuilder` refactor, and `OxygeneTokenizer`
+extraction changed nothing about the existing whole-assembly path's
+output.
+
+`ProfileProps`'s name comes from `SanitizePropsTypeName`: take the
+component name's last `/`-separated segment (`"pages/Profile"` →
+`"Profile"`), strip non-alphanumeric characters, append `"Props"`. This
+is one reasonable v1 answer to `docs/DESIGN.md` §7.4's still-open "exact
+naming/output-file convention is TBD" — not a settled decision; revisit
+if it doesn't hold up against real component-naming conventions.
+
+### 24.6 Known v1 limitations (by design, not oversights)
+
+Matches what §22.6 scoped in advance, now confirmed against real code
+rather than just planned:
+
+- **`new class(...)` anonymous-literal prop values are not supported** —
+  fall back to `unknown` + a diagnostic naming the key, per this
+  section's opening scope decision. Supporting them means synthesizing
+  an on-the-fly named IR type per literal, a distinct and larger piece
+  of work than anything else here.
+- **No cross-method/cross-class props construction** — the props
+  variable must be declared and populated in the *same* method as the
+  `Inertia.Render` call. A props dictionary built by a helper method and
+  passed in, or populated across multiple methods, isn't tracked.
+- **No conditional/branch-dependent key-setting awareness** — the
+  scanner doesn't know or care whether a `props['X'] := ...;` statement
+  is inside an `if`/`else`; it just accumulates every assignment to a
+  tracked variable it sees, in whichever order the tokens appear.
+- **No `Inertia.Defer(...)`/`Inertia.Merge(...)` unwrapping** — a value
+  wrapped in either resolves to whatever `ResolveValueExprType` makes of
+  the *whole* wrapped expression, which (being a method call, not a
+  literal/identifier/`new`) will be `unknown` today. The real type is
+  the async lambda's return type — its own smaller follow-up spike if
+  pursued (§22.6 already flagged this).
+- **No dynamic/computed keys** — only a literal string token directly
+  inside `[...]` is recognized as a key.
+- **Short-name type resolution can collide** — `ResolveTypeName`/the
+  scanner's known-types lookup is keyed by a type's bare `Name`, not its
+  full `Namespace.Name`; two same-named types in different namespaces
+  within the target assembly would resolve to whichever was registered
+  last. Not exercised by the fixture (single-namespace); worth a
+  dedicated regression fixture before relying on this in a
+  multi-namespace real project.

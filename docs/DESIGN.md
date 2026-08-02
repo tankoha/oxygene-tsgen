@@ -367,6 +367,18 @@ flowchart TD
 > scanning** — a third option this section's original (a)/(b) split
 > didn't consider. See §22 for the full investigation; the summary below
 > replaces the old "neither approach has been prototyped" framing.
+>
+> **Implemented 2026-08-02, see `HANDOFF.md` §24:** `tsgen generate
+> --mode inertia` runs this mode for real —
+> `src/Tsgen/Inertia/InertiaScanner.pas` (call-site + props-field
+> detection) and `src/Tsgen/Inertia/InertiaIrBuilder.pas` (the
+> reachability BFS described in this section's diagram, step ①→③, minus
+> the SCC decomposition since cycle detection is still deferred,
+> `HANDOFF.md` §23.1). v1 scope: literal/identifier/non-generic `new
+> NamedType(...)` prop values resolve; `new class(...)` anonymous
+> literals, cross-method props construction, conditional key-setting, and
+> `Inertia.Defer`/`Inertia.Merge` unwrapping do not yet (`HANDOFF.md`
+> §24.6 has the full list, all deliberate v1 boundaries, not oversights).
 
 **Problem statement**: §3.1–3.4 above assume the existing model — scan the whole
 assembly, build `IrAssembly.AllTypes` from everything, then find cycles among all
@@ -904,6 +916,18 @@ layout naturally pairs one generated `.d.ts` per page component, whereas a Vue
 `defineProps<...>()`-oriented layout may prefer inlining the type directly at the
 point of use rather than as an ambient global declaration. This is left as an
 explicit open question (§11) rather than prescribed here.
+
+**Partial v1 answer, still not the file-layout decision above**
+(`HANDOFF.md` §24.5): the entry-point scanner (§3.5) needs *some* naming
+convention for the interface it synthesizes per `Inertia.Render` call
+site even before the file-layout question is settled, so it picked one:
+the component name's last `/`-segment, sanitized to alphanumeric, plus a
+`"Props"` suffix (`"pages/Profile"` → `ProfileProps`), grouped into a
+shared `declare namespace Props { ... }` block within the single-file
+output (`§10.1`'s current MVP shape) so a bare top-level `export`
+doesn't silently turn the whole `.d.ts` into an ES module. This settles
+*what the type is called*, not *what file it lives in* — the per-page/
+per-directory layout question above is untouched and remains open.
 
 ---
 

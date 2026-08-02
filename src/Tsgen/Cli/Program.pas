@@ -7,6 +7,7 @@ uses
   Tsgen.Loading,
   Tsgen.Nrt,
   Tsgen.Ir,
+  Tsgen.Inertia,
   Tsgen.Emit,
   Tsgen.Diagnostics;
 
@@ -16,7 +17,7 @@ type
     class method Main(args: array of String): Int32;
     begin
       if (args.Length = 0) or (args[0] <> 'generate') then begin
-        writeLn('Usage: tsgen generate --assembly <path.dll> --source <dir> --out <dir> [--enum-style numeric|union] [--nrt-unknown-policy nullable|non-null|mark-unknown]');
+        writeLn('Usage: tsgen generate --assembly <path.dll> --source <dir> --out <dir> [--mode assembly|inertia] [--enum-style numeric|union] [--nrt-unknown-policy nullable|non-null|mark-unknown]');
         exit(1);
       end;
 
@@ -25,6 +26,7 @@ type
       var outDir: String := nil;
       var chosenEnumStyle := EnumStyle.Numeric;
       var unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
+      var inertiaMode := false;
 
       var i: Int32 := 1;
       while i < args.Length do begin
@@ -51,12 +53,20 @@ type
           if args[i] = 'non-null' then unknownPolicy := NrtUnknownPolicy.TreatAsNonNull
           else if args[i] = 'mark-unknown' then unknownPolicy := NrtUnknownPolicy.MarkUnknown
           else unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
+        end
+        else if a = '--mode' then begin
+          inc(i);
+          inertiaMode := (args[i] = 'inertia');
         end;
         inc(i);
       end;
 
       if String.IsNullOrEmpty(assemblyPath) or String.IsNullOrEmpty(outDir) then begin
         writeLn('Error: --assembly and --out are required.');
+        exit(1);
+      end;
+      if inertiaMode and String.IsNullOrEmpty(sourceDir) then begin
+        writeLn('Error: --mode inertia requires --source (entry-point discovery scans source for Inertia.Render call sites; there is nothing to find without it).');
         exit(1);
       end;
 
@@ -75,7 +85,16 @@ type
       else
         diagnostics.AddWarning('--source not given; all members will fall back to --nrt-unknown-policy (no explicit NRT info available).');
 
-      var ir := IrBuilder.Build(raw, nullability);
+      var ir: IrAssemblyLite;
+      if inertiaMode then begin
+        writeLn('Scanning source for Inertia.Render call sites: ' + sourceDir);
+        var pages := InertiaScanner.Scan(sourceDir, raw, diagnostics);
+        writeLn('Found ' + pages.Count.ToString() + ' Inertia.Render call site(s).');
+        ir := InertiaIrBuilder.Build(raw, pages, nullability);
+      end
+      else
+        ir := IrBuilder.Build(raw, nullability);
+
       var dts := DtsEmitter.Emit(ir, chosenEnumStyle, unknownPolicy, diagnostics);
 
       if not Directory.Exists(outDir) then

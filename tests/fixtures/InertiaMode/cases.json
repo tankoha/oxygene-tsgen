@@ -1,0 +1,12 @@
+[
+  {
+    "name": "default",
+    "args": ["--mode", "inertia"],
+    "expected": "expected/default.d.ts"
+  },
+  {
+    "name": "non-null",
+    "args": ["--mode", "inertia", "--nrt-unknown-policy", "non-null"],
+    "expected": "expected/non-null.d.ts"
+  }
+]

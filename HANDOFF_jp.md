@@ -2319,3 +2319,228 @@ generics対応がない状態でスキャナを先に作ると、それらを描
   いたため)が、これを実際にテストする、asyncでラップされたメンバー
   を*生成する*ものはまだ何もない — この特定の分岐に対するフィクスチャ
   カバレッジはまだない。
+
+---
+
+## 24. Inertia.Render エントリーポイントスキャナを実装(`--mode inertia`)(Windows実機検証、2026-08-02)
+
+§22のスパイクで実現可能と確認した仕組みを実際に実装 — これが
+`docs/DESIGN.md` §3.5(エントリーポイント駆動の型発見)の本実装であり、
+`docs/DESIGN.md` §11項目8が挙げていた「最優先の技術検証項目」を
+解決する。ユーザーが事前にv1のスコープを確認済み: リテラル/識別子/
+非genericの`new NamedType(...)`という値の式は解決するが、
+`new class(...)`によるanonymousリテラルのprops値は今回は`unknown` +
+診断警告にフォールバックし、対応しない(その場で名前を合成した
+IR型を登録する仕組みが必要で、別種の、より大きな作業のため先送り)。
+
+### 24.1 まず共有トークナイザを切り出した
+
+新しいスキャナを書く前に、`NullabilityScanner`の
+`ScanToken`/`Tokenize`/`EnsureLanguageRegistered`を新規
+`src/Tsgen/Nrt/OxygeneTokenizer.pas`
+(`Tsgen.Nrt.OxygeneTokenizer`、`Tsgen.Nrt.ScanToken`)に切り出した —
+これは投機的な再利用ではなく、実際に今存在する重複(両スキャナとも
+ファイル全体に対する同一の`TokenStream`セットアップが必要)なので、
+先に切り出すのが正しい判断であり、過剰な先行抽象化ではない。
+`NullabilityScanner.Scan`は今や独自のコピーではなく
+`OxygeneTokenizer.Tokenize`を呼ぶ。挙動は不変 — 新しいコードを
+一切書く前に、フルスイートが引き続きパスすることで確認した。
+
+### 24.2 `InertiaScanner`(`src/Tsgen/Inertia/InertiaScanner.pas`)
+
+§22.3の発見(Oxygeneには動作するオブジェクト/コレクション初期化子
+構文が存在しない)により、実際のコードが生成しうる*唯一*のパターンは
+連続したインデクサ代入である:
+
+```pascal
+var props := new InertiaProps;
+props['User'] := aUser;
+props['IsAdmin'] := true;
+result := Inertia.Render('pages/Profile', props);
+```
+
+そのためスキャナの仕事は、各`method ... begin ... end;`本体の中で
+(コンストラクタや本体のない/インターフェースのメソッド宣言は追跡
+しない — v1のスコープ):
+
+1. パラメータの宣言型(`method Name(...)`ヘッダから)とローカル変数の
+   宣言型(`var x := new T;` / `var x: T := ...;`から)を追跡する。
+   小さなBCLエイリアス表(`String` → `System.String`等)と、対象
+   アセンブリ自身の型への短縮名ルックアップ(`RawAssembly.Types`から
+   一度だけ構築)を組み合わせて解決する。
+2. ローカル変数の解決済みの書かれた型名が文字通り`InertiaProps`または
+   `Dictionary`である場合、その変数を「propsの候補」として認識する
+   (書かれた型名への文字列一致 — InertiaNetCoreの`Render`が受け付ける
+   のはこの2つの型の形だけなので、これで十分。§22.1)。
+3. `propsCandidate['key'] := valueExpr;`という文ごとに、`valueExpr`の
+   型を解決する — リテラル(文字列/整数/実数/`true`/`false`)、単純な
+   識別子(追跡しているパラメータ/ローカル変数のシンボル表を引く)、
+   または`new NamedType`/`new NamedType(...)`(非genericのみ)—
+   その変数の蓄積フィールドリストに1つ追加する。解決できない場合は
+   `Tsgen.Diagnostics`にキー名を含む警告を追加し、`unknown`にマップ
+   される「(unresolved)」というプレースホルダ型にフォールバックする。
+4. `Inertia.Render('component', propsVar)`に出会ったら、`propsVar`の
+   蓄積フィールドを使って`InertiaPageProps`を生成する
+   (第2引数がない`Inertia.Render('component')`の場合は、フィールド
+   ゼロ個の正当なページとして扱う)。第2引数が解決できない場合
+   (メソッド呼び出し、インライン式、propsの候補として見たことのない
+   変数)は、間違った/不完全なページを黙って出力するのではなく、
+   警告を出してその呼び出し箇所をスキップする。
+
+**設計中ではなく、フィクスチャを作る過程で見つけて直したもの**:
+「new NamedType(...)」のマッチャーは当初丸かっこを必須としていたが、
+Oxygeneでは丸かっこなしの無引数コンストラクタ呼び出しも許容される
+(`new MetaDto;` — このコードベースの他の場所、例えば§22のスパイク
+プローブの`result := new InertiaResponse;`で既に動作確認済み)。
+2トークンの`new Identifier`という形を明示的に扱わないと、現実的には
+よくあるパターンが黙って実際の型ではなく`unknown`に解決されて
+しまっていた。出荷前に修正 — 丸かっこ付きの形だけでなく、丸かっこ
+なしの形を実際に使うフィクスチャを構築したことで発見できた。
+
+`NullabilityScanner`が既に使っていたもの以外に必要だったトークンID
+(`TI_method=243`、`TI_new=247`、`T_Assignment=132`、`T_String=170`、
+`T_Integer=160`、`T_Real=161`、`TI_true=273`、`TI_false=224`)は、
+`RemObjects.Elements.Code.Oxygene.Token`の公開staticフィールドを
+reflectionで確認し、使い捨てのスニペットをトークナイズすることで
+確認した — このプロジェクトがこれまでのトークンID確認すべてで
+行ってきたのと同じ「推測せず検証する」規律(§7.2、§12.2、§16.1、
+§18.2)。文字列リテラルはPascal形式のシングルクォート(`''`が
+リテラルなクォート1文字をエスケープ)であり、`GetString()`も
+`GetOriginalString()`もクォートを外さないことを実機確認済みなので、
+`UnquoteStringLiteral`が外側のクォートを取り除き、`''`を`'`へ
+手動でアンエスケープする。
+
+### 24.3 `InertiaIrBuilder`(`src/Tsgen/Inertia/InertiaIrBuilder.pas`)— 到達可能性のBFS
+
+`Tsgen.Ir.IrBuilder`をまず3つに分割した(`BuildProviders`、
+`BuildType`、`Build` — 最後のものは今や単に前の2つをループで呼ぶ
+だけ)ので、`InertiaIrBuilder`は型ごとのNRT解決ロジックを重複させず
+そのまま再利用できる — 新規に必要だったのは*どの*型を変換するかだけ
+であり、*どう*変換するかではない。
+
+スキャナの出力(ページのリスト、各ページは`(key, RawTypeRef)`
+フィールドのリスト)から、最終的な`IrAssemblyLite`を組み立てるのは:
+(1) `RawAssembly.Types`を`FullName`でインデックス化する。(2) 各
+フィールドの`RawTypeRef`からBFSキュー/`HashSet<String>`をシードする
+(配列/generic引数を再帰的に辿ってleafの名前付き型参照を見つける —
+`TypeMapper.MapTypeRef`が既に必要としているのと全く同じアンラップの
+形を再利用)。(3) キューを空になるまで処理し、到達可能になった各型
+自身のメンバーについて手順(2)を繰り返す — これは`docs/DESIGN.md`
+§3.2手順①の辺収集そのものであり、SCC分解(依然としてあえて先送り、
+§23.1)を除いたもので、「全ての型」ではなく即席のルート集合から
+始まる点だけが違う、新しいアルゴリズムではない。(4) 到達可能な各
+`RawType`を`IrBuilder.BuildType`で変換する。順序は`aRaw.Types`自身の
+順序(`HashSet`のイテレーション順ではない — このコードベースの他の
+箇所と同じ理由で、契約として当てにしない)。(5) ページごとに1つの
+`IrTypeLite`インターフェースを合成し、各フィールドの`Nullability`を
+*同じ*プロバイダチェーン経由(`NullabilityProviderChain.Resolve`に
+空の型名キーを渡す)で解決する — 合成されたProps型には
+`OxygeneSourceScanProvider`の辞書が突き合わせられる本物のreflect
+されたメンバーが存在しないので、正しく`Unknown`を返し、
+`ValueTypeDefaultProvider`はキーに関係なく`RawTypeRef`だけから
+値型/`Nullable<T>`のフィールドを正しく解決する。
+
+**設計中ではなく、実際の出力を確認していて見つけて直したもの**:
+最初の動くバージョンでは合成したProps型に`NamespaceName := ''`を
+与えていたが、`DtsEmitter`は(既存のロジック通り、正しく)これを
+`declare namespace`でラップせず**裸のトップレベルの`export
+interface`**として出力する。`.d.ts`ファイルが裸のトップレベル
+`export`と`declare namespace`ブロックを混在させると、その`export`が
+現れた瞬間に純粋なグローバルアンビエント宣言ファイルではなくなる —
+TypeScriptはトップレベルの`import`/`export`が1つでも存在すると
+*ファイル全体*をモジュールとして扱うため、同じファイル内の他の
+namespaceすべてが、下流のコードからどう消費されるかが黙って変わって
+しまう。合成した全てのProps型に、namespaceなしではなく共有の
+`'Props'`というnamespaceを与えることで修正した — これは決着した
+規約ではなく、暫定的なグルーピングの選択である(§24.5参照)。これは
+自動チェックではなく、フィクスチャを固定する前に生成された`.d.ts`
+出力を実際に目で読んで見つけた — 単体レベルのレビューでは捕まえ
+られないバグの一種(型ごとには構造的に正しいが、組み合わさると
+間違っている出力)として覚えておく価値がある。
+
+### 24.4 CLIの配線
+
+`Program.pas`に`--mode assembly|inertia`を追加した(既定は
+`assembly`で、既存の挙動を一字一句変えない — このセクションの
+フィクスチャを追加する前に、フルスイートが変更なくパスすることで
+確認済み)。`--mode inertia`は`--source`を必須とする
+(なければハードエラー — エントリーポイント検出はそれなしでは
+スキャンする対象が何もない)。そして`AssemblyLoader`の暗黙の
+アセンブリ全体`IrBuilder.Build`経路の代わりに、`InertiaScanner.Scan`
++ `InertiaIrBuilder.Build`へ分岐する。`NullabilityScanner.Scan`は
+どちらのモードでも同じように動作する(両モードとも同じNRT辞書が
+必要なため)。
+
+### 24.5 新規フィクスチャ: `tests/fixtures/InertiaMode`
+
+1つのcontrollerメソッドに1つの`Inertia.Render`呼び出しを置き、
+解決/未解決のあらゆる形を一度にカバーする: `User: UserDto`
+(パラメータを参照する識別子 — `UserDto.Role: RoleDto`により
+`RoleDto`は*推移的にのみ*到達可能になり、BFSが単なるページ
+フィールドへの直接参照だけでなく、実際にメンバー参照を辿ることを
+証明する)、`IsAdmin: true`(リテラル→値型→
+`ValueTypeDefaultProvider`経由で自動的にnon-nullable、
+`--nrt-unknown-policy`は一切関与しない)、`Bio: 'hello'`(文字列
+リテラル)、`Meta: new MetaDto`(§24.2の丸かっこなしコンストラクタ
+形式)、そして`Note: SomeHelper()`(メソッド呼び出し — あえて
+解決不能にして、クラッシュや誤った推測ではなく診断+`unknown`への
+フォールバックを証明する)。`UnusedDto`は宣言されているが到達可能な
+ものからは何も参照されておらず、BFSフィルタが単にアセンブリ全体の
+挙動にフォールバックするのではなく、実際にフィルタリングすることを
+証明する。2ケース(`default`、`non-null`)により、到達可能な型
+(`RoleDto`/`UserDto`/`MetaDto`)と合成された`Props.ProfileProps`
+インターフェースの両方が`--nrt-unknown-policy`を正しく追跡し、
+`IsAdmin`はどちらの下でもnon-nullableのままであることを確認する。
+
+スナップショットを固定する前に実機で確認した(このセッションの
+全フィクスチャと同じ規律): `tsgen --mode inertia`を直接実行し、
+出力を目で読んだ — これが§24.3のnamespaceのバグを見つけた方法
+である — その後`tools/run-tests.ps1 -UpdateSnapshots`、続けて通常の
+`tools/run-tests.ps1`。**6フィクスチャ全体で14/14ケースがパス**。
+既存5フィクスチャのスナップショットへの`git diff`は空 —
+`--mode`の追加、`IrBuilder`のリファクタリング、
+`OxygeneTokenizer`の抽出は、既存のアセンブリ全体パスの出力を
+何も変えていない。
+
+`ProfileProps`という名前は`SanitizePropsTypeName`から来ている:
+component名の最後の`/`区切りセグメントを取り(`"pages/Profile"` →
+`"Profile"`)、英数字以外を取り除き、`"Props"`を付け足す。これは
+`docs/DESIGN.md` §7.4がまだ未決着としている「正確な命名/出力
+ファイルの規約はTBD」に対する、v1として妥当な1つの答えであり、
+決着した決定ではない — 実際のcomponent命名規約に対して通用しない
+ようなら見直すこと。
+
+### 24.6 既知のv1の限界(見落としではなく意図的なもの)
+
+§22.6が事前にスコープしていたものと一致する。今回、計画通りでは
+なく実際のコードに対して確認済み:
+
+- **`new class(...)`によるanonymousリテラルのprops値は非対応** —
+  この節の冒頭のスコープ判断通り、`unknown` + キー名を含む診断
+  警告にフォールバックする。対応するにはリテラルごとにその場で
+  名前付きIR型を合成する必要があり、これはここでの他の何よりも
+  別種の、より大きな作業である。
+- **メソッド/クラスをまたいだprops構築には非対応** — propsの変数は
+  `Inertia.Render`呼び出しと*同じ*メソッド内で宣言・充填されている
+  必要がある。ヘルパーメソッドで構築されて渡されるprops辞書や、
+  複数のメソッドにまたがって充填されるものは追跡されない。
+- **条件分岐依存のキー設定を認識しない** — スキャナは
+  `props['X'] := ...;`という文が`if`/`else`の中にあるかどうかを
+  知らないし気にしない。追跡している変数への代入を、トークンが
+  現れた順に単に蓄積するだけである。
+- **`Inertia.Defer(...)`/`Inertia.Merge(...)`のアンラップは非対応** —
+  どちらかでラップされた値は、`ResolveValueExprType`が*ラップされた
+  式全体*から作るものに解決される。これは(リテラル/識別子/`new`
+  ではなく、メソッド呼び出しであるため)今日のところ`unknown`に
+  なる。実際の型はasyncラムダの戻り値の型であり、着手するなら
+  それ自体もう1つの小さなフォローアップスパイクが必要
+  (§22.6で既にフラグを立てている)。
+- **動的/計算されたキーには非対応** — `[...]`の中に直接ある
+  リテラルの文字列トークンのみをキーとして認識する。
+- **短縮名による型解決は衝突しうる** — `ResolveTypeName`/スキャナの
+  既知型ルックアップは、型の完全な`Namespace.Name`ではなく裸の
+  `Name`をキーにしている。対象アセンブリ内の異なるnamespaceにある
+  同名の2つの型は、最後に登録された方に解決されてしまう。
+  フィクスチャでは検証していない(単一namespaceのため) —
+  複数namespaceの実プロジェクトでこれに頼る前に、専用の回帰
+  フィクスチャを追加する価値がある。

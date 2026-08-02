@@ -4,19 +4,10 @@ uses
   System.Collections.Generic,
   System.IO,
   System.Text,
-  RemObjects.Elements,
-  RemObjects.Elements.Code,
-  RemObjects.Elements.Oxygene,
   RemObjects.Elements.Code.Oxygene;
 
 type
   NullabilityKind = public enum (Unknown, IsNullable, IsNotNullable);
-
-  ScanToken = public class
-  public
-    Id: Int32;
-    Text: String;
-  end;
 
   {
     Heuristic scanner, not a full parser. Scoped to properties and fields
@@ -57,16 +48,15 @@ type
     weekly-release product (HANDOFF.md §3) and these are compiler-internal
     ordinals that could renumber across versions.
 
-    Tokenizing goes through RemObjects.Elements.Code.TokenStream, which
-    drives the real Oxygene tokenizer over the whole file at once (see
-    HANDOFF.md §16). Everything below this layer works off the ScanToken
-    list, so the tokenizer stays swappable behind Tokenize().
+    Tokenizing goes through Tsgen.Nrt.OxygeneTokenizer (extracted out to
+    a shared unit, HANDOFF.md §24, once Tsgen.Inertia.InertiaScanner
+    needed the identical token-stream setup), which drives the real
+    Oxygene tokenizer over the whole file at once (see HANDOFF.md §16).
+    Everything below this layer works off the ScanToken list, so the
+    tokenizer stays swappable behind OxygeneTokenizer.Tokenize().
   }
   NullabilityScanner = public static class
   private
-    const TOK_WHITESPACE = Token.TINT_WhiteSpace;
-    const TOK_COMMENT = Token.TINT_Comment;
-    const TOK_XMLDOC = Token.TINT_XmlDocComment;
     const TOK_IDENTIFIER = Token.T_Identifier;
     const TOK_EQUAL = Token.T_Equal;
     const TOK_COLON = Token.T_Colon;
@@ -88,66 +78,6 @@ type
     const TOK_NULLABLE = Token.TI_nullable;
     const TOK_NOT = Token.TI_not;
     const TOK_NAMESPACE = Token.TI_namespace;
-    const TOK_EOF = Token.T_EOF;
-
-    class var fLanguageRegistered: Boolean := false;
-
-    {
-      TokenStream's constructor resolves a language provider out of the
-      global RemObjects.Elements.Languages registry, and merely referencing
-      RemObjects.Elements.Oxygene.dll does not populate it -- without this,
-      construction throws "Unsupported Language: Oxygene". Registering is a
-      process-wide, one-time side effect, hence the guard.
-    }
-    class method EnsureLanguageRegistered;
-    begin
-      if not fLanguageRegistered then begin
-        Languages.Register(new OxygeneLanguage);
-        fLanguageRegistered := true;
-      end;
-    end;
-
-    class method Tokenize(aText: String): List<ScanToken>;
-    begin
-      result := new List<ScanToken>;
-      if String.IsNullOrEmpty(aText) then exit;
-
-      EnsureLanguageRegistered;
-
-      var stream := new TokenStream(FragmentType.Oxygene, false);
-      stream.SetText(aText);
-
-      {
-        Items is a capacity-sized array, so Count is what bounds the loop
-        -- reading Items.Length would walk past the live fragments.
-      }
-      for i: Int32 := 0 to stream.Count - 1 do begin
-        var frag := stream.Items[i];
-
-        // Every stream ends with a zero-length T_EOF fragment.
-        if frag.Token = TOK_EOF then continue;
-
-        {
-          IsWhitespace already covers whitespace and comment fragments; the
-          explicit ID checks keep the exact filter the scanner had before
-          this went through TokenStream, in case a trivia kind exists that
-          IsWhitespace does not claim.
-        }
-        if frag.IsWhitespace then continue;
-        if (frag.Token = TOK_WHITESPACE) or (frag.Token = TOK_COMMENT) or (frag.Token = TOK_XMLDOC) then continue;
-
-        var st := new ScanToken;
-        st.Id := frag.Token;
-        {
-          GetString() rather than slicing aText: for an &-escaped
-          identifier (&class used as a member name) the tokenizer reports
-          it as T_Identifier with the & already stripped, which is what the
-          reflection side sees as the member name.
-        }
-        st.Text := frag.GetString();
-        result.Add(st);
-      end;
-    end;
 
     class method IsTypeOpen(aTokens: List<ScanToken>; aIndex: Int32): Boolean;
     begin
@@ -333,7 +263,7 @@ type
 
       for each filePath in Directory.GetFiles(aSourceDir, '*.pas', SearchOption.AllDirectories) do begin
         var text := File.ReadAllText(filePath);
-        var tokens := Tokenize(text);
+        var tokens := OxygeneTokenizer.Tokenize(text);
         ScanFile(tokens, result);
       end;
     end;

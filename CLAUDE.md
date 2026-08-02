@@ -11,24 +11,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 1 (design) is complete. Phase 2 (implementation) has a working MVP,
 hardened well past the original bullet list: `src/Tsgen` is a CLI (`tsgen
-generate --assembly <dll> --source <dir> --out <dir>`) covering Stage 1
-(Loader, via `MetadataLoadContext`), a Tokenizer-based NRT source scanner
-feeding an `INullabilityProvider` chain, a lightweight Stage 2 IR with
-generics support (`List<T>`/`Dictionary<K,V>`/`Nullable<T>`/arrays/
-user-defined-type references), and a single-file Stage 4 `DtsEmitter` —
-see `HANDOFF.md` §12/§23 for what was built, how, and its known
-limitations. Still missing: cycle detection (deliberately deferred, see
-below), the pluggable type-mapping/plugin chain, split-file output, and
-the Inertia.js-specific entry-point scanner (spiked and confirmed
-feasible, not yet implemented — `HANDOFF.md` §22). `docs/DESIGN.md`
+generate --assembly <dll> --source <dir> --out <dir> [--mode
+assembly|inertia]`) covering Stage 1 (Loader, via `MetadataLoadContext`),
+a Tokenizer-based NRT source scanner feeding an `INullabilityProvider`
+chain, a lightweight Stage 2 IR with generics support (`List<T>`/
+`Dictionary<K,V>`/`Nullable<T>`/arrays/user-defined-type references), a
+single-file Stage 4 `DtsEmitter`, and now (`--mode inertia`) the
+Inertia.js entry-point-driven mode itself — see `HANDOFF.md`
+§12/§22/§23/§24 for what was built, how, and its known limitations.
+Still missing: cycle detection (deliberately deferred, see below) and
+the pluggable type-mapping/plugin chain/split-file output. `docs/DESIGN.md`
 §10.2 has the post-MVP order.
 
 **Automated snapshot tests exist now:** run `tools/run-tests.ps1` (builds
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
 output against committed `expected/*.d.ts` snapshots per fixture's
 `cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
-an intentional output change. See `HANDOFF.md` §15. Five fixtures exist,
-12 cases total: `SampleModel` (enums, explicit NRT, all three
+an intentional output change. See `HANDOFF.md` §15. Six fixtures exist,
+14 cases total: `SampleModel` (enums, explicit NRT, all three
 `--nrt-unknown-policy` values via its deliberately-still-`Unknown` `Notes`
 field — see `HANDOFF.md` §21.3 for why that field exists),
 `TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
@@ -36,10 +36,12 @@ trailing newline, also covers `mark-unknown`), `MultiTypeAndIndexer`
 (multiple types sharing one `type` section, indexer-style properties —
 see `HANDOFF.md` §18), `NestedTypeCollision` (a nested type's
 annotated property must not overwrite an outer, same-named member's
-nullability — see `HANDOFF.md` §20), and `Generics` (`List<T>`/
+nullability — see `HANDOFF.md` §20), `Generics` (`List<T>`/
 `Dictionary<K,V>`/`Nullable<T>`/arrays/self-referential named-type
-references — see `HANDOFF.md` §23.4). Nested types themselves remain
-uncovered and out of scope for real
+references — see `HANDOFF.md` §23.4), and `InertiaMode` (`--mode
+inertia`: call-site detection, reachability BFS, an unresolvable prop
+value falling back to `unknown` + diagnostic — see `HANDOFF.md` §24.5).
+Nested types themselves remain uncovered and out of scope for real
 support: `AssemblyLoader` filters out every `t.IsNested` type before it
 reaches the IR, and `DtsEmitter` has no nested-`interface` output path
 either, so giving a nested type's own members their own output would need
@@ -84,8 +86,9 @@ of which namespace block the reference site is in. Named-type references
 are never structurally expanded, so self-/mutually-referential types
 already work without cycle detection (deliberately deferred, see below).
 **Gotcha**: Oxygene's `{ }` block comments don't nest — never put a
-brace-containing code sample inside one (confirmed the hard way,
-`HANDOFF.md` §23.6).
+brace-containing code sample inside one. Hit this twice in one session
+(`HANDOFF.md` §23.6, §24.3) before it stuck; write comments with plain
+prose or quoted phrases instead of literal TS/braces syntax.
 
 **Cycle detection (Tarjan SCC, `docs/DESIGN.md` §3) is deliberately not
 implemented.** §3.3 already states cycles can generally be ignored for
@@ -94,6 +97,26 @@ references natively) — its real value is the zod `SchemaEmitter` (not
 built) and single-file output ordering (cosmetic). Don't add it
 speculatively; revisit once the zod emitter actually needs `lazy()`
 wrapping.
+
+**`--mode inertia` implements entry-point-driven discovery**
+(`src/Tsgen/Inertia/`, `docs/DESIGN.md` §3.5, `HANDOFF.md` §22 spike →
+§24 implementation): `InertiaScanner` finds `Inertia.Render(component,
+propsVar)` call sites and the `propsVar['key'] := value;` assignments
+that built `propsVar` in the same method (the *only* pattern real
+Oxygene code can produce — Oxygene has no working object/collection-
+initializer syntax, `HANDOFF.md` §22.3); `InertiaIrBuilder` then does a
+reachability BFS from each resolved field's type (reusing
+`IrBuilder.BuildType`, refactored out of `IrBuilder.Build` for exactly
+this reuse) so only types actually referenced from Page Props — not the
+whole assembly — get emitted, plus one synthesized interface per page
+(always namespace-wrapped under a shared `'Props'` namespace, never left
+bare at top level, since a bare top-level `export` silently turns the
+whole `.d.ts` into an ES module). v1 resolves literal/identifier/
+non-generic `new NamedType(...)` prop values only; anything else
+(anonymous `new class(...)` literals, cross-method props construction,
+conditional key-setting, `Inertia.Defer`/`Inertia.Merge`) falls back to
+`unknown` + a diagnostic rather than guessing — see `HANDOFF.md` §24.6
+for the full, deliberate limitations list before extending this.
 
 When adding an NRT fixture, include both a `--nrt-unknown-policy
 non-null` case and at least one deliberately-unannotated *reference-type*

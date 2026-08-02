@@ -5,12 +5,16 @@
 > generating Props types for **Inertia.js** page components (ASP.NET Core +
 > Inertia.js) directly from controller code — see "What Is This?" below.
 > **Status: Phase 1 (design) is complete, and Phase 2 (implementation) has a
-> working, snapshot-tested CLI — but only for the *generic* assembly →
-> `.d.ts` path.** The Inertia.js-specific parts that are this tool's actual
-> primary use case (entry-point-driven discovery of `Inertia.Render` call
-> sites, Page Props / Shared Data / form-error types) have not been started
-> yet. See "CLI Usage" and "Current Status" below for what actually exists
-> today, [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
+> working, snapshot-tested CLI**, including a v1 of the Inertia.js-specific
+> entry-point mode that is this tool's actual primary use case
+> (`--mode inertia`: discovers `Inertia.Render` call sites and generates a
+> Props interface per page, plus only the types actually reachable from
+> them). It only resolves a constrained set of prop-value shapes so far
+> (literals, parameter/local references, simple `new Type(...)`
+> constructions — see "CLI Usage" below for the exact scope), and Shared
+> Data merging / form-error types are not implemented yet. See "CLI Usage"
+> and "Current Status" below for what actually exists today,
+> [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
 > [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語) for the full design, and
 > [`HANDOFF.md`](HANDOFF.md) for the detailed build log and open questions.
 >
@@ -19,11 +23,14 @@
 > ASP.NET Core + **Inertia.js** 構成のControllerコードから、Inertia.jsページ
 > コンポーネント向けのProps型を直接生成することです (詳細は下記「これは何か」参照)。
 > **現在のステータス: Phase 1 (設計) は完了し、Phase 2 (実装) は
-> スナップショットテスト済みの動くCLIがあります — ただし対応しているのは
-> 汎用的なアセンブリ→`.d.ts`の経路のみです。** このツール本来の主な用途で
-> あるInertia.js固有の部分 (`Inertia.Render`呼び出し箇所をエントリー
-> ポイントとする検出、Page Props/共有データ/フォームエラー型) はまだ
-> 着手していません。現時点で実際に存在するものは下記「CLIの使い方」
+> スナップショットテスト済みの動くCLIがあります**。このツール本来の主な
+> 用途であるInertia.js固有のエントリーポイントモードのv1も含みます
+> (`--mode inertia`: `Inertia.Render`呼び出し箇所を検出し、ページごとに
+> Props interfaceと、そこから実際に到達可能な型だけを生成)。今のところ
+> 解決できるprops値の形は限定的です (リテラル、パラメータ/ローカル変数
+> への参照、単純な`new Type(...)`構築など — 正確な範囲は下記「CLIの
+> 使い方」参照)。共有データのマージやフォームエラー型はまだ未実装です。
+> 現時点で実際に存在するものは下記「CLIの使い方」
 > 「現在のステータス」を、設計の詳細は
 > [`docs/DESIGN.md`](docs/DESIGN.md) (英語) /
 > [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語)を、詳細な作業ログと
@@ -126,87 +133,108 @@ Oxygene (Object Pascal 系言語、.NET ターゲットの Echoes バックエ�
 
 ## Current Status / 現在のステータス
 
-**Phase 1 (design) is complete. Phase 2 (implementation) has a working CLI
-for the generic assembly → `.d.ts` path, hardened well past the original
-MVP bullet list — but the Inertia.js-specific features that are this
-tool's actual primary use case ("What Is This?" above) have not been
-started.**
+**Phase 1 (design) is complete. Phase 2 (implementation) has a working CLI,
+hardened well past the original MVP bullet list, now including a v1 of
+the Inertia.js entry-point mode that is this tool's actual primary use
+case.**
 
-**Phase 1 (設計) は完了。Phase 2 (実装) は、汎用的なアセンブリ→`.d.ts`
-の経路について、当初のMVP箇条書きをかなり超えてハードニングされた
-動くCLIがあります — ただし、このツール本来の主な用途である
-Inertia.js固有の機能 (上記「これは何か」参照) にはまだ着手していません。**
+**Phase 1 (設計) は完了。Phase 2 (実装) は、当初のMVP箇条書きをかなり
+超えてハードニングされた動くCLIがあり、このツール本来の主な用途である
+Inertia.jsエントリーポイントモードのv1も含みます。**
 
 **Implemented (`src/Tsgen`, see [`CLAUDE.md`](CLAUDE.md) and
-[`HANDOFF.md`](HANDOFF.md) §12–§21 for the full build log):**
+[`HANDOFF.md`](HANDOFF.md) §12–§24 for the full build log):**
 
 - Stage 1 Loader — metadata-only assembly loading via
   `System.Reflection.MetadataLoadContext` (no execution of target code).
-  Skips non-public/nested/generic types, with a warning naming the count.
+  Skips non-public/nested/generic-*definition* types, with a warning
+  naming the count.
 - NRT (nullable reference type) resolution via a swappable
   `INullabilityProvider` chain (`docs/DESIGN.md` §4.2): a
   Tokenizer-based Oxygene source scan (`--source <dir>`) as the primary
-  provider, falling back to "known CLR value types are non-nullable by
-  default" for anything the scan has no opinion on. Handles multi-type
-  `type` sections and indexer-style properties; nested types are a known,
+  provider, falling back to "known CLR value types (including
+  `Nullable<T>`) are non-nullable/nullable by default" for anything the
+  scan has no opinion on — the `Nullable<T>` half of that works from
+  reflection alone, no `--source` needed. Handles multi-type `type`
+  sections and indexer-style properties; nested types are a known,
   documented gap (`HANDOFF.md` §18.1/§20).
-- Stage 2 IR — a lightweight intermediate representation carrying raw CLR
-  type names and tri-state nullability, unresolved until the emitter.
-- Stage 4 Emitter — single-file `.d.ts` output, namespace-nested, with a
-  hardcoded primitive/BCL type-mapping table (the full pluggable
-  `ITypeMappingRule` chain is not yet implemented) and a choice of enum
-  style and NRT-unknown-member policy (see "CLI Usage" below).
+- Stage 2 IR — a lightweight intermediate representation carrying a
+  structural CLR type reference (`RawTypeRef`: arrays, generic
+  arguments) and tri-state nullability, unresolved until the emitter.
+- Stage 3/4 type mapping + emitter — generics (`List<T>`-family → `T[]`,
+  `Dictionary<K,V>`-family → `Record<K,V>`, `Nullable<T>`/`Task<T>`/
+  `ValueTask<T>` unwrapping), references between the tool's own emitted
+  types, and single-file `.d.ts` output with a choice of enum style and
+  NRT-unknown-member policy (see "CLI Usage" below). The full pluggable
+  `ITypeMappingRule` chain is not yet implemented — type mapping is a
+  fixed set of rules, not user-extensible yet.
+- **`--mode inertia`**: entry-point-driven discovery (`docs/DESIGN.md`
+  §3.5) — finds `Inertia.Render` call sites, resolves the props shape
+  built up via `props['key'] := value;` assignments in the same method,
+  and emits only the types actually reachable from them. See "CLI Usage"
+  below for the exact value-expression shapes it resolves today.
 - A `Tsgen.Diagnostics` component: pipeline stages return diagnostics
   instead of writing to the console directly, deduplicated and printed to
   stderr by the CLI.
-- Automated snapshot tests (`tools/run-tests.ps1`): 4 fixtures, 10 cases,
-  covering enums, explicit/implicit NRT, tokenizer edge cases (comments,
-  string literals, no trailing newline), multi-type sections, indexer
-  properties, and a nested-type dictionary-corruption regression.
+- Automated snapshot tests (`tools/run-tests.ps1`): 6 fixtures, 14 cases.
 
 **実装済み (`src/Tsgen`。詳細な作業ログは [`CLAUDE.md`](CLAUDE.md) と
-[`HANDOFF.md`](HANDOFF.md) §12–§21 を参照):**
+[`HANDOFF.md`](HANDOFF.md) §12–§24 を参照):**
 
 - Stage 1 Loader — `System.Reflection.MetadataLoadContext` によるメタデータ
   のみのアセンブリ読み込み (対象コードを実行しない)。非public/nested/
-  generic な型はスキップし、件数を警告として表示。
+  generic*定義*型はスキップし、件数を警告として表示。
 - NRT (nullable参照型) の解決は、差し替え可能な `INullabilityProvider`
   チェーン (`docs/DESIGN.md` §4.2) 経由: Tokenizerベースの Oxygene
   ソーススキャン (`--source <dir>`) を主プロバイダとし、スキャンが
-  判定できないものについては「既知のCLR値型は既定でnon-nullable」に
-  フォールバックする。1つの`type`セクション内の複数型宣言やindexer形式の
-  プロパティに対応。nested typesは既知の、文書化済みの未対応事項
-  (`HANDOFF.md` §18.1/§20)。
-- Stage 2 IR — 生のCLR型名と三値のnullabilityを、Emitterまで未解決の
-  まま運ぶ軽量な中間表現。
-- Stage 4 Emitter — 単一ファイルの`.d.ts`出力、namespaceでネスト、
-  ハードコードされたプリミティブ/BCL型マッピング表 (完全にプラガブルな
-  `ITypeMappingRule`チェーンは未実装) を使用し、enumスタイルと
-  NRT-unknownメンバーのポリシーを選択可能 (下記「CLIの使い方」参照)。
+  判定できないものについては「既知のCLR値型(`Nullable<T>`を含む)は
+  既定でnon-nullable/nullable」にフォールバックする — `Nullable<T>`側は
+  `--source`なしでもreflectionだけで動作する。1つの`type`セクション内の
+  複数型宣言やindexer形式のプロパティに対応。nested typesは既知の、
+  文書化済みの未対応事項 (`HANDOFF.md` §18.1/§20)。
+- Stage 2 IR — 構造化されたCLR型参照(`RawTypeRef`: 配列、generic引数)と
+  三値のnullabilityを、Emitterまで未解決のまま運ぶ軽量な中間表現。
+- Stage 3/4 型マッピング + Emitter — generics(`List<T>`系 → `T[]`、
+  `Dictionary<K,V>`系 → `Record<K,V>`、`Nullable<T>`/`Task<T>`/
+  `ValueTask<T>`のアンラップ)、このツール自身が出力する型同士の参照、
+  そしてenumスタイルとNRT-unknownメンバーのポリシーを選択できる単一
+  ファイルの`.d.ts`出力(下記「CLIの使い方」参照)。完全にプラガブルな
+  `ITypeMappingRule`チェーンは未実装 — 型マッピングは固定のルール集合で
+  あり、まだユーザー拡張はできない。
+- **`--mode inertia`**: エントリーポイント駆動の型発見
+  (`docs/DESIGN.md` §3.5)— `Inertia.Render`呼び出し箇所を見つけ、
+  同じメソッド内の`props['key'] := value;`という代入で組み立てられた
+  propsの形状を解決し、そこから実際に到達可能な型だけを出力する。
+  今日解決できる正確な値の式の形は下記「CLIの使い方」参照。
 - `Tsgen.Diagnostics`コンポーネント: パイプラインの各ステージはコンソール
   に直接書き込む代わりに診断情報を返し、CLIが重複排除した上でstderrへ
   出力する。
-- 自動化されたスナップショットテスト (`tools/run-tests.ps1`): 4フィクスチャ・
-  10ケース。enum、明示的/暗黙的NRT、トークナイザのエッジケース (コメント、
-  文字列リテラル、末尾改行なし)、複数型セクション、indexerプロパティ、
-  nested type辞書汚染の回帰テストをカバー。
+- 自動化されたスナップショットテスト (`tools/run-tests.ps1`): 6フィクスチャ・
+  14ケース。
 
 **Not yet implemented / 未実装:**
 
-- The Inertia.js-specific features that are this tool's primary use case
-  (entry-point-driven discovery of `Inertia.Render` calls, Page Props /
-  Shared Data / form-error types — `docs/DESIGN.md` §6, `HANDOFF.md` §6).
-- Cycle detection, generics, the pluggable type-mapping/plugin chain,
-  split-file output, real nested-type support (`docs/DESIGN.md` §10.2 has
-  the post-MVP priority order).
+- Shared Data merging and form-error types (`docs/DESIGN.md` §2.6 items
+  2–3) — the other two Inertia-specific targets alongside Page Props.
+- Cycle detection (deliberately deferred — not load-bearing for the
+  current `.d.ts`-only emitter, `docs/DESIGN.md` §3.3), the pluggable
+  type-mapping/plugin chain, split-file output, real nested-type support
+  (`docs/DESIGN.md` §10.2 has the post-MVP priority order).
+- `--mode inertia`'s own known v1 gaps: `new class(...)` anonymous-literal
+  prop values, props built across multiple methods/classes, conditional
+  key-setting, `Inertia.Defer`/`Inertia.Merge` unwrapping (`HANDOFF.md`
+  §24.6 has the full list).
 
-- このツールの主な用途であるInertia.js固有の機能
-  (`Inertia.Render`呼び出しをエントリーポイントとする検出、
-  Page Props/共有データ/フォームエラー型 — `docs/DESIGN.md` §6、
-  `HANDOFF.md` §6)。
-- 循環参照検出、ジェネリクス、プラガブルな型マッピング/pluginチェーン、
-  split-file出力、nested typesの本当のサポート
+- 共有データのマージとフォームエラー型 (`docs/DESIGN.md` §2.6の項目
+  2–3) — Page Propsと並ぶ、残り2つのInertia固有ターゲット。
+- 循環参照検出 (あえて先送り — 現状の`.d.ts`専用Emitterにとっては
+  必須ではないため、`docs/DESIGN.md` §3.3)、プラガブルな型マッピング/
+  pluginチェーン、split-file出力、nested typesの本当のサポート
   (post-MVPの優先順位は `docs/DESIGN.md` §10.2 参照)。
+- `--mode inertia`自身の既知のv1のギャップ: `new class(...)`による
+  anonymousリテラルのprops値、複数メソッド/クラスにまたがって構築される
+  props、条件分岐依存のキー設定、`Inertia.Defer`/`Inertia.Merge`の
+  アンラップ (完全な一覧は`HANDOFF.md` §24.6)。
 
 - Design document: [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
   [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語)
@@ -235,10 +263,46 @@ Build with `tools/dev-build.ps1` (not `EBuild.exe` directly — see
 
 ```
 tsgen generate --assembly <path.dll> --source <dir> --out <dir> \
+  [--mode assembly|inertia] \
   [--enum-style numeric|union] \
   [--nrt-unknown-policy nullable|non-null|mark-unknown]
 ```
 
+- `--mode` — `assembly` (default) generates types for every public type in
+  the assembly, as described throughout this section. `inertia` instead
+  scans `--source` for `Inertia.Render(componentName, propsVar)` call
+  sites and generates one Props interface per call site plus only the
+  types actually reachable from them (`docs/DESIGN.md` §3.5, `HANDOFF.md`
+  §24) — this is the tool's actual primary use case ("What Is This?"
+  above), but is newer and narrower in scope than `assembly` mode: it
+  only resolves prop values that are literals, a parameter/local variable
+  reference, or a non-generic `new NamedType(...)`/`new NamedType`
+  expression, built up via `var props := new InertiaProps; props['key']
+  := value; ...` in the *same* method as the `Render` call (the only
+  pattern Oxygene can actually produce — it has no working object/
+  collection-initializer syntax, see `HANDOFF.md` §22.3). Anything else
+  (anonymous `new class(...)` literals, props assembled across multiple
+  methods, conditional key-setting, `Inertia.Defer`/`Inertia.Merge`) is
+  not yet resolved and falls back to `unknown` plus a diagnostic naming
+  the key, rather than a silent guess. `--mode inertia` requires
+  `--source` (there is nothing to scan without it).
+  `assembly`(既定)は、このセクション全体で説明している通り、アセンブリ内の
+  全ての公開型に対して型を生成する。`inertia`は代わりに`--source`を走査して
+  `Inertia.Render(componentName, propsVar)`呼び出し箇所を検出し、呼び出し
+  箇所ごとに1つのProps interfaceと、そこから実際に到達可能な型だけを生成
+  する(`docs/DESIGN.md` §3.5、`HANDOFF.md` §24)— これはこのツール本来の
+  主な用途(上記「これは何か」参照)だが、`assembly`モードより新しく、対応
+  範囲も狭い: 解決できるprops値は、リテラル、パラメータ/ローカル変数への
+  参照、非genericの`new NamedType(...)`/`new NamedType`式のみで、
+  `Render`呼び出しと*同じ*メソッド内で`var props := new InertiaProps;
+  props['key'] := value; ...`という形で構築されたものに限る(Oxygeneが
+  実際に生成しうる唯一のパターン — 動作するオブジェクト/コレクション
+  初期化子構文が存在しないため、`HANDOFF.md` §22.3参照)。それ以外
+  (anonymousな`new class(...)`リテラル、複数メソッドにまたがって組み立て
+  られるprops、条件分岐依存のキー設定、`Inertia.Defer`/`Inertia.Merge`)
+  はまだ解決できず、黙って推測するのではなく`unknown`とキー名を含む診断
+  警告にフォールバックする。`--mode inertia`は`--source`を必須とする
+  (それなしでは走査する対象が何もない)。
 - `--assembly` (required) — path to the built target `.dll`, loaded as
   metadata only via `MetadataLoadContext`.
   (必須) — 対象の `.dll`。`MetadataLoadContext` でメタデータのみ読み込む。
@@ -334,7 +398,8 @@ oxygene-tsgen/
 │   ├── Cli/Program.pas          # Argument parsing + pipeline wiring / 引数解析とパイプライン結線
 │   ├── Loading/                 # Stage 1: MetadataLoadContext-based assembly loader / Stage 1: MetadataLoadContextベースのアセンブリローダー
 │   ├── Nrt/                     # Tokenizer-based NRT source scanner + INullabilityProvider chain / Tokenizerベースの NRT ソーススキャナ + INullabilityProvider チェーン
-│   ├── Ir/                      # Stage 2: lightweight IR + hardcoded type mapper / Stage 2: 軽量IR + ハードコードされた型マッパー
+│   ├── Inertia/                 # --mode inertia: Inertia.Render call-site scanner + reachability BFS / --mode inertia: Inertia.Render呼び出し検出 + 到達可能性BFS
+│   ├── Ir/                      # Stage 2: lightweight IR + generics-aware type mapper / Stage 2: 軽量IR + genericsに対応した型マッパー
 │   ├── Emit/DtsEmitter.pas      # Stage 4: single-file .d.ts emitter / Stage 4: 単一ファイル .d.ts エミッター
 │   ├── Diagnostics/             # Pipeline-stage diagnostics (see CLAUDE.md) / パイプラインステージの診断情報 (CLAUDE.md参照)
 │   └── Tsgen.elements           # Project file / プロジェクトファイル
