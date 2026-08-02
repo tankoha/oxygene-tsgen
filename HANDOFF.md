@@ -2652,3 +2652,33 @@ documentation-precision gap (claiming more verification than had
 actually happened), not an actual bug. Worth remembering as its own
 lesson: "confirmed hands-on" claims in this file should name exactly
 what was tested, not the general area.
+
+### 25.1. Remaining categories from the same self-review
+
+The user's prompt named five typical AI-generated-code failure patterns.
+Two are covered above (inconsistent rigor → the bug fix; dependency
+optimism → the `UnquoteStringLiteral` note). The other three were also
+checked, with no code change resulting, but the conclusions are worth
+keeping on record so a future session doesn't have to re-derive them:
+
+- **Over-defensive coding**: no notable instances found. If anything the
+  session leaned the opposite way (see the bug above) — each feature was
+  scoped to what was actually asked for, without piling on unrequested
+  edge-case handling, so this category didn't manifest as excess either.
+- **Security gaps**: low relevance for this project's actual threat
+  model — `tsgen` is a local CLI with no secrets, no IAM, no SQL. The one
+  candidate, `--assembly`/`--source` taking unvalidated file paths, was
+  judged not worth guarding: the tool only ever points at the invoking
+  user's own machine/assembly/source, so there's no privilege boundary
+  being crossed by not validating the path.
+- **Outdated idioms**: not literally "deprecated API usage" (nothing in
+  this codebase is old enough for that), but a close relative of it
+  surfaced twice — silently assuming a C#-familiar syntax would carry
+  over to Oxygene. Both instances are already documented elsewhere and
+  are cross-referenced here rather than repeated: the object-initializer
+  syntax that silently no-ops (§22.3) and the non-nesting `{ }` comment
+  bug hit twice (§23.6, §24.3; also called out as a standing gotcha in
+  `CLAUDE.md`). Same root cause both times — training-data familiarity
+  with C# leaking into assumptions about Oxygene syntax — so treat any
+  new "this should just work like in C#" assumption as a place to verify
+  hands-on first, not a third instance to add here.
