@@ -2596,3 +2596,59 @@ rather than just planned:
   last. Not exercised by the fixture (single-namespace); worth a
   dedicated regression fixture before relying on this in a
   multi-namespace real project.
+
+---
+
+## 25. Self-review fix: CLI arg parsing had no bounds checking (Windows hands-on, 2026-08-02)
+
+Found via a deliberate self-review prompted by the user asking whether
+this session's code showed typical AI-generated-code failure patterns
+(inconsistent rigor, over-defensive coding, dependency optimism, security
+gaps, outdated idioms) — not found by any test, since no fixture
+exercises malformed CLI invocations, only malformed/edge-case Oxygene
+source.
+
+**The bug**: `Program.pas`'s argument-parsing loop did `inc(i); x :=
+args[i];` for every flag taking a value (`--assembly`, `--source`,
+`--out`, `--enum-style`, `--nrt-unknown-policy`, `--mode`), with no
+`(i < args.Length)` guard. `tsgen generate --assembly` with nothing
+following crashed with an unhandled `IndexOutOfRangeException` and a raw
+.NET stack trace instead of a clean CLI error message.
+
+**Worth naming as a real inconsistency, not just a bug**: the same
+session's `InertiaScanner.pas` (§24) guards nearly every token-list
+access with `(i < aTokens.Count)` — meticulous bounds-checking in the
+token-scanning code, none at all in the CLI's own argument parsing. Same
+codebase, same session, two very different levels of rigor depending on
+which kind of "user input" (Oxygene source vs. command-line flags) was
+being handled — a concrete instance of the "consistency varies across a
+session" pattern the user asked about.
+
+**Fix**: track a `missingValueFor: String` sentinel; each flag branch
+sets it instead of indexing out of bounds when its value is missing, and
+the loop exits with `Error: --flag requires a value.` (exit code 1)
+instead of continuing. Verified hands-on, not just by re-running the
+existing suite: `tsgen generate --assembly` (and separately
+`--nrt-unknown-policy`/`--mode` with no value) now print the clean error
+and exit 1; the full snapshot suite still passes 14/14 unchanged,
+confirming no regression to normal, well-formed invocations. No new
+automated fixture added for the error path itself — `tools/run-tests.ps1`
+is built around "build an assembly, run `tsgen` against it," not
+malformed-invocation testing, and adding that infrastructure for one
+narrow fix wasn't judged worth it this round (manual verification is
+straightforward and was actually done, unlike some past instances in
+this project where "should work" was asserted without checking).
+
+**Separately noted during the same review, not yet fixed**: an
+`InertiaScanner.UnquoteStringLiteral` correctness claim in §24.2 turned
+out to be one degree short of what was actually verified —
+`GetString()`/`GetOriginalString()` not un-quoting was confirmed
+hands-on, but the `Replace('''''', '''')` un-escaping logic itself was
+never exercised by any fixture (`tests/fixtures/InertiaMode`'s string
+literals contain no embedded escaped quotes). Verified during this same
+review, via a disposable scratchpad probe tokenizing `'it''s'`: correctly
+unescapes to `it's` (4 chars). No code change needed — this was a
+documentation-precision gap (claiming more verification than had
+actually happened), not an actual bug. Worth remembering as its own
+lesson: "confirmed hands-on" claims in this file should name exactly
+what was tested, not the general area.

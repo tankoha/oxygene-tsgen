@@ -29,36 +29,57 @@ type
       var inertiaMode := false;
 
       var i: Int32 := 1;
-      while i < args.Length do begin
+      var missingValueFor: String := nil;
+      {
+        Every branch below does inc(i) then reads args[i] as that flag's
+        value -- without the (i < args.Length) guard, a flag with no value
+        after it (e.g. "tsgen generate --assembly" with nothing following)
+        indexed past the end of args and threw an unhandled
+        IndexOutOfRangeException instead of a clean CLI error. Found during
+        a self-review, not by any test -- no fixture exercises malformed
+        CLI invocations, only malformed/edge-case Oxygene source.
+      }
+      while (i < args.Length) and (missingValueFor = nil) do begin
         var a := args[i];
         if a = '--assembly' then begin
           inc(i);
-          assemblyPath := args[i];
+          if i < args.Length then assemblyPath := args[i] else missingValueFor := a;
         end
         else if a = '--source' then begin
           inc(i);
-          sourceDir := args[i];
+          if i < args.Length then sourceDir := args[i] else missingValueFor := a;
         end
         else if a = '--out' then begin
           inc(i);
-          outDir := args[i];
+          if i < args.Length then outDir := args[i] else missingValueFor := a;
         end
         else if a = '--enum-style' then begin
           inc(i);
-          if args[i] = 'union' then chosenEnumStyle := EnumStyle.StringUnion
-          else chosenEnumStyle := EnumStyle.Numeric;
+          if i < args.Length then begin
+            if args[i] = 'union' then chosenEnumStyle := EnumStyle.StringUnion
+            else chosenEnumStyle := EnumStyle.Numeric;
+          end
+          else missingValueFor := a;
         end
         else if a = '--nrt-unknown-policy' then begin
           inc(i);
-          if args[i] = 'non-null' then unknownPolicy := NrtUnknownPolicy.TreatAsNonNull
-          else if args[i] = 'mark-unknown' then unknownPolicy := NrtUnknownPolicy.MarkUnknown
-          else unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
+          if i < args.Length then begin
+            if args[i] = 'non-null' then unknownPolicy := NrtUnknownPolicy.TreatAsNonNull
+            else if args[i] = 'mark-unknown' then unknownPolicy := NrtUnknownPolicy.MarkUnknown
+            else unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
+          end
+          else missingValueFor := a;
         end
         else if a = '--mode' then begin
           inc(i);
-          inertiaMode := (args[i] = 'inertia');
+          if i < args.Length then inertiaMode := (args[i] = 'inertia') else missingValueFor := a;
         end;
         inc(i);
+      end;
+
+      if missingValueFor <> nil then begin
+        writeLn('Error: ' + missingValueFor + ' requires a value.');
+        exit(1);
       end;
 
       if String.IsNullOrEmpty(assemblyPath) or String.IsNullOrEmpty(outDir) then begin
