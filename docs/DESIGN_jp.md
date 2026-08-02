@@ -522,13 +522,21 @@ type
   (§4.1) のために予約。裏付けが取れた場合、ソースが入手できないアセンブリ
   向けにプロバイダ1の前段に入る (または置き換える)。
 
-**実装状況 (`HANDOFF.md` §13 時点):** MVP はスキャナの結果ディクショナリを
-`INullabilityProvider` インターフェースを介さず IR ビルダーに直結している —
-チェーン抽象は引き続き目標形だが、放棄ではなく新規スコープとして先送り
-(`HANDOFF.md` §13 の未着手リスト項目4)。一方で IR は三値の結果
-(`Unknown`/`IsNullable`/`IsNotNullable`) を未解決のまま Emitter まで運ぶ
-形に既になっており、これはプロバイダチェーンと後述の `mark-unknown`
-ポリシーの両方にとってのデータモデル上の前提条件である。
+**実装状況 (`HANDOFF.md` §21 時点で更新、2026-08-02):**
+`INullabilityProvider` チェーンは配線済み
+(`src/Tsgen/Nrt/NullabilityProviders.pas`)。上記のより抽象的な
+`IrMemberRef`/`AnalysisContext` 案ではなく、このツールが実際に持っている
+具体的なデータ(型のフルネーム+メンバー名+生のCLR型名の文字列)に
+合わせた形になっている — `IrBuilder.Build`が`List<INullabilityProvider>`
+(`OxygeneSourceScanProvider`、続いて`ValueTypeDefaultProvider`)を構築し、
+各メンバーを`NullabilityProviderChain.Resolve`で解決する(最初に
+Unknown以外を返したプロバイダが勝つ)。プロバイダ2
+(`RoslynStyleAttributeProvider`)は依然として本当に未実装のまま —
+チェーンには実在する2つのプロバイダだけが入っており、3つ目のための
+スタブは置いていない。IRの三値の結果
+(`Unknown`/`IsNullable`/`IsNotNullable`)は以前と変わらず未解決のまま
+Emitterまで運ばれており、これがあったからこそProvider 3をIRの形を
+一切変えずに追加できた。
 
 ### 4.3 なぜこの設計か
 
@@ -551,12 +559,14 @@ type
 - 「わからない」を握りつぶして勝手に non-null と判定すると、実行時に null が
   来てランタイムエラーになる TypeScript コードを生成してしまう (安全性の
   欠如)。逆に全部 nullable 扱いにすると型の有用性が下がる。ユーザーが
-  `--nrt-unknown-policy` (`assume-nullable` | `assume-non-nullable` |
-  `mark-unknown`) を選べるようにし、暗黙の安全性判断をツールが勝手に
-  行わないようにする。MVP は前者2つを実装済み (`nullable` | `non-null`
-  として)。`mark-unknown` は `HANDOFF.md` §13 の IR 再構成によりデータ
-  モデル上はもうブロックされていないが、CLI オプションとしてはまだ
-  配線されていない。
+  `--nrt-unknown-policy`(実際のCLIフラグの値としては`nullable` |
+  `non-null` | `mark-unknown`)を選べるようにし、暗黙の安全性判断を
+  ツールが勝手に行わないようにする。**3つとも実装済み**
+  (`HANDOFF.md` §21)。`mark-unknown`は`non-null`と同じ素の型を
+  出力しつつ(TypeScriptには「nullabilityが未確定」を「non-nullable
+  確定」と型レベルで区別する手段がないため)、末尾に
+  `// nrt: unknown`という行コメントを付与する — 架空の型を発明する
+  ことなく、目視・grep両方で区別できるようにしている。
 
 ---
 

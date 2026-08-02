@@ -8,5 +8,10 @@
     "name": "union-nonnull",
     "args": ["--enum-style", "union", "--nrt-unknown-policy", "non-null"],
     "expected": "expected/union-nonnull.d.ts"
+  },
+  {
+    "name": "mark-unknown",
+    "args": ["--nrt-unknown-policy", "mark-unknown"],
+    "expected": "expected/mark-unknown.d.ts"
   }
 ]

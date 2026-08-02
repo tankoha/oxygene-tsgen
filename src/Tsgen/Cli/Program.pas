@@ -16,7 +16,7 @@ type
     class method Main(args: array of String): Int32;
     begin
       if (args.Length = 0) or (args[0] <> 'generate') then begin
-        writeLn('Usage: tsgen generate --assembly <path.dll> --source <dir> --out <dir> [--enum-style numeric|union] [--nrt-unknown-policy nullable|non-null]');
+        writeLn('Usage: tsgen generate --assembly <path.dll> --source <dir> --out <dir> [--enum-style numeric|union] [--nrt-unknown-policy nullable|non-null|mark-unknown]');
         exit(1);
       end;
 
@@ -49,6 +49,7 @@ type
         else if a = '--nrt-unknown-policy' then begin
           inc(i);
           if args[i] = 'non-null' then unknownPolicy := NrtUnknownPolicy.TreatAsNonNull
+          else if args[i] = 'mark-unknown' then unknownPolicy := NrtUnknownPolicy.MarkUnknown
           else unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
         end;
         inc(i);

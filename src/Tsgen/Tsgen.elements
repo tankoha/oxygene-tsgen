@@ -35,6 +35,7 @@
     <Compile Include="Loading\RawModel.pas" />
     <Compile Include="Loading\AssemblyLoader.pas" />
     <Compile Include="Nrt\NullabilityScanner.pas" />
+    <Compile Include="Nrt\NullabilityProviders.pas" />
     <Compile Include="Ir\IrModel.pas" />
     <Compile Include="Ir\TypeMapper.pas" />
     <Compile Include="Ir\IrBuilder.pas" />

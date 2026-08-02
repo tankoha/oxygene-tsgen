@@ -1778,3 +1778,145 @@ nullability。`Outer`自身の宣言をnested typeより*前*に配置してい�
 - `DiagnosticList`自体の設計や§19の内容は、§20.4の`CLAUDE.md`の
   言い回し訂正を除いて変更していない — レビューは§19の実質的な
   内容は健全だと判断した。
+
+---
+
+## 21. `INullabilityProvider`チェーン + `mark-unknown`ポリシーの実装(Windows実機検証、2026-08-02)
+
+課題管理表の項目#9・#10を解決 — Fable5レビュー1回目からの残り2件の
+先送り項目(`HANDOFF.md` §13の未着手リスト項目4)。プロバイダチェーン
+の抽象化には配線(seam)自体が一切なく(`IrBuilder.Build`内の直接の
+辞書検索のまま)、`--nrt-unknown-policy`の3つ目の値はそれに
+ブロックされていた。ユーザーが残っていた候補の中からこれを選んだ。
+
+### 21.1 コードを書く前に決めたスコープ
+
+事前に(推測せず)ユーザーと確認した設計上の分岐点が2つ:
+
+1. **Provider 3(`ValueTypeDefaultProvider`、値型は既定でnon-nullable)
+   をProvider 1と併せて含めるかどうか。** これは既存のスナップショット
+   出力を実際に変えてしまう(値型で無注釈のメンバーがそもそも
+   `Unknown`でなくなり、`--nrt-unknown-policy`が触れなくなる)。
+   **確認結果: 含める** — これは`docs/DESIGN.md` §4.2の同じ
+   プロバイダチェーン設計の一部であり、スコープの逸脱ではない。
+   挙動の変化自体が正しさの向上でもある(C#/.NETの実際のデフォルト
+   —値型は明示的に`Nullable<T>`/`T?`にしない限りnon-nullable—
+   と一致する)。
+2. **`mark-unknown`をTypeScriptでどう表現するか。** 型システムには
+   「non-nullable確定」と区別して「nullability未確定」を表現する
+   手段がない。**確認結果: `non-null`と同じ素の型に、末尾の
+   `// nrt: unknown`という行コメントを付与する** — 架空の型や、
+   まだ未実装のXML doc→JSDoc変換機能(`docs/DESIGN.md` §10.2項目3)
+   と衝突しかねないJSDocタグを発明することなく、目視・grepの両方で
+   区別できるようにした。
+
+Provider 2(`RoslynStyleAttributeProvider`、reflectionの属性ベース)
+はあえて実装していない — `docs/DESIGN.md` §4.2の通り依然として
+本当に未実装のままであり、チェーンには実在する2つのプロバイダ
+だけが入っており、3つ目のためのスタブは置いていない。
+
+### 21.2 追加したもの
+
+**新規ファイル`src/Tsgen/Nrt/NullabilityProviders.pas`**
+(`Tsgen.elements`の`Compile`リストで`NullabilityScanner.pas`の
+直後に追加 — `NullabilityKind`が必要で、かつこれを使う
+`IrBuilder.pas`より前に来る必要があるため): `INullabilityProvider`
+(メソッド1つ、
+`TryGetNullability(aTypeFullName, aMemberName, aClrTypeName):
+NullabilityKind`)、`OxygeneSourceScanProvider`(既存のスキャン結果
+辞書をラップ — Provider 1)、`ValueTypeDefaultProvider`(Provider 3 —
+既知の値型CLR名のリスト。`Tsgen.Ir.TypeMapper`のリストとは
+あえて別リストとして持たせている — `Tsgen.Ir`は既に`Tsgen.Nrt`に
+一方向で依存しているため、逆方向に呼び出すと循環参照になってしまう
+ためで、両リストは同期を保つ必要がある旨をコメントで明記した)、
+そして`NullabilityProviderChain.Resolve`(リスト順に各プロバイダを
+試し、最初にUnknown以外を返した時点で止める — `docs/DESIGN.md`
+§2.2/§2.3の型マッピングチェーンと同じ「最初に一致したものが勝つ」
+という考え方)。
+
+`docs/DESIGN.md` §4.2の`IrMemberRef`/`AnalysisContext`という擬似
+コードから、このツールが実際に持っている具体的な文字列(型の
+フルネーム、メンバー名、生のCLR型名)に合わせて改変した —
+`IrMemberRef`/`AnalysisContext`はコードベースの他のどこにも存在
+しないため、あの抽象的なスケッチは*パターン*を示すためのもので
+あり、逐語的に再現すべきAPIではないと判断した。
+
+**`IrBuilder.pas`**: `Build`が
+`[OxygeneSourceScanProvider(aNullability), ValueTypeDefaultProvider]`
+を一度だけ構築し、各メンバーの`Nullability`を直接の辞書検索の
+代わりに`NullabilityProviderChain.Resolve`経由で解決するように
+なった。`IrBuilder.Build`自身のシグネチャは変更していない(引き続き
+生のスキャン辞書を受け取る)— チェーンの存在は内部実装の詳細であり、
+`Program.pas`からは見えない。`NrtUnknownPolicy`に3つ目の値
+`MarkUnknown`を追加した。
+
+**`DtsEmitter.pas`**: `ResolveNullable`を2つのメソッドに分割した —
+`ResolveNullableSuffix`(ロジックは不変、リネームのみ)が`| null`を
+付けるかどうかを決め、新規の`ShouldMarkUnknown`が`// nrt: unknown`
+コメントを付けるかどうかを決める(メンバーが本当に`Unknown`で、
+*かつ*ポリシーが`MarkUnknown`のときのみtrue — 明示的に注釈された
+メンバーには決してコメントが付かない。ポリシーは本物の`Unknown`
+にしか触れないという既存のルールと一致する)。
+
+**`Program.pas`**: `--nrt-unknown-policy mark-unknown`を既存の
+`nullable`/`non-null`と並んで認識するようにした。usage文言も更新。
+
+### 21.3 Provider 3追加によるフィクスチャ/スナップショットへの影響
+
+`-UpdateSnapshots`を信用する前に手動で確認する、§18/§20と同じ
+規律で: まず`SampleModel`に対して`tsgen`を直接実行した。
+`Age`/`IsAdmin`(`Int32`/`Boolean`、無注釈)が、デフォルトポリシー下で
+`number | null`/`boolean | null`から素の`number`/`boolean`に変わった
+ことを確認 — Provider 3によって確定的にnon-nullableと解決され、
+そもそも`Unknown`でなくなったため、ポリシーが作用する対象が
+なくなった。
+
+**これによって見つかった副作用**: `SampleModel`の`union-nonnull`
+ケースは`--nrt-unknown-policy non-null`を検証するために存在して
+いたが、その唯一の`Unknown`メンバー2つ(`Age`、`IsAdmin`)はどちらも
+値型だった — Provider 3導入後、`SampleModel`には本物の`Unknown`
+メンバーが**一つもなくなり**、そのケースが黙ってポリシー関連の
+検証を何も行わなくなっていた。`property Notes: String read write;`
+(あえて無注釈、あえて参照型にしてProvider 3が解決できないように
+した)を追加し、ポリシーが判別できる本物の`Unknown`メンバーを
+復活させた。`SampleModel`と`TokenizerEdgeCases`の両方に`mark-unknown`
+ケースを追加した(`TokenizerEdgeCases`はコメント/文字列リテラル
+漏れテスト由来の本物の`Unknown`な`String`メンバーを複数既に
+持っていたため、ソース側の変更は不要だった)。
+
+「テストが通った」だけで済ませない完全な差分レビュー:
+`MultiTypeAndIndexer`の`Beta.Count: Int32`(無注釈)は`default`
+ケースで`number | null`から`number`に変わった(`SampleModel`と
+同じ理由)。その`non-null`ケースは元々`number`だったため差分なし。
+`NestedTypeCollision`と`TokenizerEdgeCases`の`default`/`non-null`
+ケースは**差分なし** — `NestedTypeCollision`唯一のメンバーは
+明示的に`nullable`(Provider 3の影響を受けない)であり、
+`TokenizerEdgeCases`にはそもそも値型のメンバーが一つもない。
+
+### 21.4 検証
+
+- `tools/dev-build.ps1`: クリーンビルド。
+- `-UpdateSnapshots`を実行する前に、`SampleModel`(`Notes: string;
+  // nrt: unknown`、`Age`/`IsAdmin`/明示的に注釈されたメンバーは
+  すべて無影響)と`TokenizerEdgeCases`(本物の`Unknown`な4メンバーに
+  正しくコメントが付き、`WithKeywordDefault`/`ExplicitlyNotNullable`
+  等には正しく付かない)の両方で`mark-unknown`の出力を手動確認した。
+- `tools/run-tests.ps1 -UpdateSnapshots`、続けて通常モードの
+  `tools/run-tests.ps1`: 4つのフィクスチャ全体で**10/10ケースが
+  パス**(新規`mark-unknown`ケース2つを追加、これまでの8から10に)。
+- すべてのスナップショット差分を手動でレビューし(§21.3)、事前の
+  手動確認の予測と一致することを確認した — 手動での`tsgen`実行と
+  スナップショットスイートの間に驚きはなかった。
+
+### 21.5 これによって変わらないもの
+
+- Provider 2(C#/VB製の依存アセンブリ向け、reflectionの属性ベース
+  のNRT)は未実装のまま — `docs/DESIGN.md` §4.2の通り、引き続き
+  post-MVPとして正しい状態。
+- `MetadataFxProvider`の空きスロット(`docs/DESIGN.md` §4.1)は
+  依然としてただのスロットのまま — §14で既にNRTに関してはこの
+  手がかりが行き止まりだと結論づけているため、このツールにとって
+  ここに実装すべきものは何もない。
+- `AssemblyLoader.pas`、`NullabilityScanner.pas`、Diagnosticsコン
+  ポーネントへの変更はなし — 今回は完全にStage 2/4(IRビルダー/
+  Emitter)側の変更と、それに付随する新規ユニット1つだけである。

@@ -8,5 +8,10 @@
     "name": "non-null",
     "args": ["--nrt-unknown-policy", "non-null"],
     "expected": "expected/non-null.d.ts"
+  },
+  {
+    "name": "mark-unknown",
+    "args": ["--nrt-unknown-policy", "mark-unknown"],
+    "expected": "expected/mark-unknown.d.ts"
   }
 ]

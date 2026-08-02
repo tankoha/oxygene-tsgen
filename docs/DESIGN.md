@@ -560,14 +560,19 @@ Provider lineup, in priority order:
   metadata.fx lead (§4.1); if confirmed, it would slot in ahead of (or replace)
   Provider 1 for assemblies whose sources are unavailable.
 
-**Implementation status (as of `HANDOFF.md` §13):** the MVP wires the scanner's
-result dictionary directly into the IR builder rather than through the
-`INullabilityProvider` interface — the chain abstraction remains the target
-shape but is deferred as new scope, not abandoned (`HANDOFF.md` §13, deferral
-item 4). The IR does already carry the tri-state result
-(`Unknown`/`IsNullable`/`IsNotNullable`) unresolved all the way to the emitter,
-which is the data-model prerequisite for both the provider chain and the
-`mark-unknown` policy discussed below.
+**Implementation status (updated `HANDOFF.md` §21, 2026-08-02):** the
+`INullabilityProvider` chain is wired up (`src/Tsgen/Nrt/NullabilityProviders.pas`),
+adapted to the concrete data the tool has today (type full name + member
+name + raw CLR type name as strings) rather than the more abstract
+`IrMemberRef`/`AnalysisContext` sketch above — `IrBuilder.Build` constructs
+a `List<INullabilityProvider>` (`OxygeneSourceScanProvider`, then
+`ValueTypeDefaultProvider`) and resolves each member through
+`NullabilityProviderChain.Resolve`, first non-Unknown answer wins. Provider
+2 (`RoslynStyleAttributeProvider`) remains genuinely unimplemented — the
+chain has exactly the two providers that are real, not a stub for the
+third. The IR's tri-state result (`Unknown`/`IsNullable`/`IsNotNullable`)
+stays unresolved all the way to the emitter as before, which is what made
+adding Provider 3 possible without touching the IR shape at all.
 
 ### 4.3 Why This Design
 
@@ -591,11 +596,13 @@ which is the data-model prerequisite for both the provider chain and the
 - Silently collapsing "don't know" into "assume non-null" would generate
   TypeScript that throws at runtime when null actually shows up (a safety gap);
   treating everything as nullable reduces how useful the types are. Users
-  choose via `--nrt-unknown-policy` (`assume-nullable` | `assume-non-nullable` |
-  `mark-unknown`), so the tool never makes an implicit safety judgment on the
-  user's behalf. The MVP implements the first two (as `nullable` | `non-null`);
-  `mark-unknown` is no longer blocked by the data model after the `HANDOFF.md`
-  §13 IR reshape, but is not yet wired up as a CLI option.
+  choose via `--nrt-unknown-policy` (`nullable` | `non-null` | `mark-unknown`
+  in the actual CLI flag values), so the tool never makes an implicit safety
+  judgment on the user's behalf. **All three are implemented** (`HANDOFF.md`
+  §21): `mark-unknown` renders the same bare type as `non-null` (TypeScript
+  has no type-level way to express "nullability undetermined" as distinct
+  from "confirmed non-nullable") plus a trailing `// nrt: unknown` comment,
+  so it stays visually/grep-ably distinct without inventing a fake type.
 
 ---
 

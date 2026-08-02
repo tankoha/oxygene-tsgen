@@ -1842,3 +1842,143 @@ they're living status, not a dated log entry.
 - No change to `DiagnosticList`, the Diagnostics component's own design,
   or anything in §19 beyond the `CLAUDE.md` wording nit in §20.4 — the
   review found §19's substance sound.
+
+---
+
+## 21. `INullabilityProvider` chain + `mark-unknown` policy implemented (Windows hands-on, 2026-08-02)
+
+Resolves issue-tracker items #9 and #10 — the two remaining Fable5
+review-1 deferrals (`HANDOFF.md` §13 deferral item 4): the provider-chain
+abstraction had no seam at all (a direct dictionary lookup in
+`IrBuilder.Build`), and `--nrt-unknown-policy`'s third value was blocked
+on it. User picked this up next, from the residual-open-items list.
+
+### 21.1 Scope decided before writing code
+
+Two design forks confirmed with the user up front rather than assumed:
+
+1. **Whether to include Provider 3 (`ValueTypeDefaultProvider`, value
+   types non-nullable by default) alongside Provider 1**, given it
+   measurably changes existing snapshot output for unannotated
+   value-typed members (they stop being `Unknown` at all, so
+   `--nrt-unknown-policy` no longer touches them). **Confirmed: yes,
+   include it** — it's explicitly part of the same `docs/DESIGN.md` §4.2
+   provider-chain design, not scope creep, and the behavior change is a
+   correctness improvement (matches C#/.NET's actual default: value
+   types are non-nullable unless explicitly `Nullable<T>`/`T?`).
+2. **How to render `mark-unknown` in TypeScript**, since the type system
+   has no way to express "nullability undetermined" as distinct from
+   "confirmed non-nullable." **Confirmed: same bare type as `non-null`,
+   plus a trailing `// nrt: unknown` line comment** — visually/grep-ably
+   distinct without inventing a fake type or JSDoc tag that might collide
+   with the not-yet-implemented XML-doc-to-JSDoc feature
+   (`docs/DESIGN.md` §10.2 item 3).
+
+Provider 2 (`RoslynStyleAttributeProvider`, reflection-attribute-based)
+was deliberately **not** implemented — it remains genuinely unimplemented
+per `docs/DESIGN.md` §4.2, and the chain only contains the two providers
+that are real rather than a stub for a third.
+
+### 21.2 What was added
+
+**New file `src/Tsgen/Nrt/NullabilityProviders.pas`** (added to
+`Tsgen.elements`'s `Compile` list right after `NullabilityScanner.pas`,
+since it needs `NullabilityKind` and precedes `IrBuilder.pas` which uses
+it): `INullabilityProvider` (one method,
+`TryGetNullability(aTypeFullName, aMemberName, aClrTypeName): NullabilityKind`),
+`OxygeneSourceScanProvider` (wraps the existing scan-result dictionary —
+Provider 1), `ValueTypeDefaultProvider` (Provider 3 — a known-value-type
+CLR-name list, deliberately kept as a separate list from
+`Tsgen.Ir.TypeMapper`'s rather than a shared call, since `Tsgen.Ir`
+already depends on `Tsgen.Nrt` one-way and calling back would create a
+circular unit reference — the two lists are documented as needing to stay
+in sync), and `NullabilityProviderChain.Resolve` (tries each provider in
+list order, stops at the first non-`Unknown` answer — same "first match
+wins" philosophy as the type-mapping chain in `docs/DESIGN.md` §2.2/§2.3).
+
+Adapted from `docs/DESIGN.md` §4.2's `IrMemberRef`/`AnalysisContext`
+pseudocode to the concrete strings this tool actually has (type full
+name, member name, raw CLR type name) — the abstract sketch was
+illustrative of the *pattern*, not a literal API to replicate given
+`IrMemberRef`/`AnalysisContext` don't otherwise exist in the codebase.
+
+**`IrBuilder.pas`**: `Build` now constructs
+`[OxygeneSourceScanProvider(aNullability), ValueTypeDefaultProvider]` once
+and resolves every member's `Nullability` through
+`NullabilityProviderChain.Resolve` instead of the direct dictionary
+lookup. `IrBuilder.Build`'s own signature is unchanged (still takes the
+raw scan dictionary) — the chain's existence is an internal
+implementation detail, invisible to `Program.pas`. `NrtUnknownPolicy`
+gained a third value, `MarkUnknown`.
+
+**`DtsEmitter.pas`**: `ResolveNullable` split into two methods —
+`ResolveNullableSuffix` (unchanged logic, renamed) decides whether to
+append `| null`; new `ShouldMarkUnknown` decides whether to append the
+`// nrt: unknown` comment (true only when the member is genuinely
+`Unknown` *and* the policy is `MarkUnknown` — explicitly-annotated
+members never get the comment, matching the existing rule that policy
+only ever touches genuinely-`Unknown` members).
+
+**`Program.pas`**: `--nrt-unknown-policy mark-unknown` recognized
+alongside the existing `nullable`/`non-null` values; usage string
+updated.
+
+### 21.3 Fixture/snapshot changes from adding Provider 3
+
+Hand-verified before trusting `-UpdateSnapshots`, same discipline as
+§18/§20: ran `tsgen` directly against `SampleModel` first. Confirmed
+`Age`/`IsAdmin` (`Int32`/`Boolean`, unannotated) flipped from `number |
+null`/`boolean | null` (default policy) to bare `number`/`boolean` —
+correctly resolved as definitively not-nullable by Provider 3, no longer
+`Unknown` at all, so the policy no longer has anything to act on for
+them.
+
+**Side effect this surfaced**: `SampleModel`'s `union-nonnull` case
+existed specifically to exercise `--nrt-unknown-policy non-null`, but its
+only two `Unknown` members (`Age`, `IsAdmin`) were both value types —
+after Provider 3, `SampleModel` had **zero** genuinely-`Unknown` members
+left, silently making that case stop testing anything policy-related.
+Added `property Notes: String read write;` (deliberately unannotated,
+deliberately a reference type so Provider 3 can't resolve it) to restore
+a genuinely-`Unknown` member the policy can still discriminate on. Added
+matching `mark-unknown` cases to both `SampleModel` and
+`TokenizerEdgeCases` (`TokenizerEdgeCases` already had several genuinely-
+`Unknown` `String` members from its comment/string-literal-leak tests, no
+source changes needed there).
+
+Full diff review (not just "tests pass"): `MultiTypeAndIndexer`'s
+`Beta.Count: Int32` (unannotated) flipped from `number | null` to
+`number` in the `default` case (identical reasoning to `SampleModel`);
+its `non-null` case was already `number` so no diff there.
+`NestedTypeCollision` and `TokenizerEdgeCases`'s `default`/`non-null`
+cases showed **no diff** — `NestedTypeCollision`'s only member is
+explicitly `nullable` (unaffected by Provider 3), and
+`TokenizerEdgeCases` has no value-typed members at all.
+
+### 21.4 Verification
+
+- `tools/dev-build.ps1`: clean build.
+- Hand-verified `mark-unknown` output on both `SampleModel` (`Notes:
+  string; // nrt: unknown`, with `Age`/`IsAdmin`/explicitly-annotated
+  members all unaffected) and `TokenizerEdgeCases` (four genuinely-
+  `Unknown` members correctly commented, `WithKeywordDefault`/
+  `ExplicitlyNotNullable`/etc. correctly not) before running
+  `-UpdateSnapshots`.
+- `tools/run-tests.ps1 -UpdateSnapshots` then plain `tools/run-tests.ps1`:
+  **10/10 cases pass** across all four fixtures (2 new `mark-unknown`
+  cases added, for 10 total vs. the previous 8).
+- Every snapshot diff reviewed by hand (§21.3) and matched what the
+  hand-verification predicted — no surprises between manual `tsgen`
+  invocations and the snapshot suite.
+
+### 21.5 What this does not change
+
+- Provider 2 (reflection-attribute-based NRT for C#/VB dependency
+  assemblies) remains unimplemented — still correctly post-MVP per
+  `docs/DESIGN.md` §4.2.
+- The `MetadataFxProvider` open slot (`docs/DESIGN.md` §4.1) is still
+  just a slot — §14 already closed that lead as a dead end for NRT
+  specifically, so there's nothing to implement there for this tool.
+- No changes to `AssemblyLoader.pas`, `NullabilityScanner.pas`, or the
+  Diagnostics component — this was entirely a Stage 2/4 (IR builder /
+  emitter) change plus one new Stage-2-adjacent unit.

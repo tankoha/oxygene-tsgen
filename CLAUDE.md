@@ -22,14 +22,17 @@ generics, the pluggable type-mapping/plugin chain, and split-file output
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
 output against committed `expected/*.d.ts` snapshots per fixture's
 `cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
-an intentional output change. See `HANDOFF.md` §15. Four fixtures exist:
-`SampleModel` (enums, explicit NRT, unknown-policy fallback),
+an intentional output change. See `HANDOFF.md` §15. Four fixtures exist,
+10 cases total: `SampleModel` (enums, explicit NRT, all three
+`--nrt-unknown-policy` values via its deliberately-still-`Unknown` `Notes`
+field — see `HANDOFF.md` §21.3 for why that field exists),
 `TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
-trailing newline), `MultiTypeAndIndexer` (multiple types sharing one
-`type` section, indexer-style properties — see `HANDOFF.md` §18), and
-`NestedTypeCollision` (a nested type's annotated property must not
-overwrite an outer, same-named member's nullability — see `HANDOFF.md`
-§20). Nested types themselves remain uncovered and out of scope for real
+trailing newline, also covers `mark-unknown`), `MultiTypeAndIndexer`
+(multiple types sharing one `type` section, indexer-style properties —
+see `HANDOFF.md` §18), and `NestedTypeCollision` (a nested type's
+annotated property must not overwrite an outer, same-named member's
+nullability — see `HANDOFF.md` §20). Nested types themselves remain
+uncovered and out of scope for real
 support: `AssemblyLoader` filters out every `t.IsNested` type before it
 reaches the IR, and `DtsEmitter` has no nested-`interface` output path
 either, so giving a nested type's own members their own output would need
@@ -40,11 +43,31 @@ alone is responsible for and now does (`HANDOFF.md` §20 — a `(depth =
 typeDepth)` guard was missing on the property-scanning branch). See
 `HANDOFF.md` §18.1/§20 for the full explanation.
 
-When adding an NRT fixture, include a `--nrt-unknown-policy non-null`
-case: under the default policy an `Unknown` member and one that wrongly
+**Nullability is resolved through the `INullabilityProvider` chain**
+(`src/Tsgen/Nrt/NullabilityProviders.pas`, `HANDOFF.md` §21), not a
+direct dictionary lookup: `IrBuilder.Build` tries
+`OxygeneSourceScanProvider` (the source scan's explicit annotations)
+first, then `ValueTypeDefaultProvider` (known CLR value types are
+non-nullable unless explicitly annotated otherwise) — first non-`Unknown`
+answer wins. Consequence worth remembering: an unannotated *value-typed*
+member (`Int32`, `Boolean`, etc.) is no longer `Unknown` at all, so
+`--nrt-unknown-policy` has nothing to act on for it — only unannotated
+*reference-typed* members stay genuinely `Unknown`. `--nrt-unknown-policy`
+has three values: `nullable` | `non-null` | `mark-unknown` (the last
+renders the same bare type as `non-null` plus a trailing `// nrt:
+unknown` comment, since TypeScript can't express "undetermined" as a
+distinct type). Provider 2 (reflection-attribute-based, for C#/VB
+dependency assemblies) remains genuinely unimplemented — don't add a stub
+for it without a real need.
+
+When adding an NRT fixture, include both a `--nrt-unknown-policy
+non-null` case and at least one deliberately-unannotated *reference-type*
+member: under the default policy an `Unknown` member and one that wrongly
 picked up a leaked annotation both render `| null`, so a default-only
 snapshot hides exactly the bug class the fixture exists to catch
-(`HANDOFF.md` §16.3).
+(`HANDOFF.md` §16.3) — and since `ValueTypeDefaultProvider`, an
+unannotated value-typed member won't stay `Unknown` long enough to
+demonstrate the policy at all (`HANDOFF.md` §21.3).
 
 **`metadata.fx` does not carry NRT info** — confirmed hands-on
 (`HANDOFF.md` §14), closing the lead from §9.4. The Tokenizer-based
@@ -92,8 +115,8 @@ through a 5-stage pipeline built around a shared intermediate representation
 
 Other cross-cutting extension points follow the same "first match in a
 priority chain wins" pattern as the type mapper: `ITypeMappingRule`,
-`INullabilityProvider`, `INamingStrategy`, `ISchemaBackend`,
-`IEmitterExtension` (see `docs/DESIGN.md` §6).
+`INullabilityProvider` (implemented, see below), `INamingStrategy`,
+`ISchemaBackend`, `IEmitterExtension` (see `docs/DESIGN.md` §6).
 
 **Pipeline stages report problems via `Tsgen.Diagnostics`, not direct
 console I/O.** `AssemblyLoader.Load` and `DtsEmitter.Emit` both take a
@@ -114,9 +137,10 @@ Oxygene's Echoes (.NET) backend does **not** emit
 `NullableAttribute`/`NullableContextAttribute` for Oxygene-authored code.
 Reflection alone therefore cannot recover NRT info for types Oxygene
 itself wrote; the design relies on a source-level token scan built on the
-Elements SDK's official tokenizer surface (`RemObjects.Elements.Oxygene.dll`
-— `SimpleTokenizer` in the MVP as built, see `HANDOFF.md` §7/§12.2) as the
-primary `INullabilityProvider` implementation. `docs/DESIGN.md` §4 was
+Elements SDK's official tokenizer surface (`RemObjects.Elements.Code.TokenStream`,
+reworked from an earlier `SimpleTokenizer`-based implementation — see
+`HANDOFF.md` §7/§12.2/§16) as the primary `INullabilityProvider` chain
+link (`OxygeneSourceScanProvider`, `HANDOFF.md` §21). `docs/DESIGN.md` §4 was
 revised on 2026-08-02 to reflect all of this (done by the Fable5 review
 agent at the user's request, together with the matching §10.1/§11-item-1
 touch-ups and the full `DESIGN_jp.md` mirror), closing the doc-drift item

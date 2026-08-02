@@ -24,14 +24,31 @@ type
   }
   DtsEmitter = public static class
   private
-    class method ResolveNullable(aKind: NullabilityKind; aUnknownPolicy: NrtUnknownPolicy): Boolean;
+    class method ResolveNullableSuffix(aKind: NullabilityKind; aUnknownPolicy: NrtUnknownPolicy): Boolean;
     begin
       if aKind = NullabilityKind.IsNullable then
         result := true
       else if aKind = NullabilityKind.IsNotNullable then
         result := false
-      else
+      else // Unknown: MarkUnknown renders bare (see ShouldMarkUnknown for
+           // the comment that distinguishes it from a real not-nullable)
         result := (aUnknownPolicy = NrtUnknownPolicy.TreatAsNullable);
+    end;
+
+    {
+      TypeScript's type system has no way to express "nullability
+      undetermined" as a distinct type from a plain, non-nullable one --
+      so under MarkUnknown, a genuinely Unknown member renders with the
+      same bare type as TreatAsNonNull, plus this trailing comment to
+      keep it visually/grep-ably distinct from an explicit `not nullable`.
+      Only applies to genuinely Unknown members; explicitly-annotated ones
+      never reach here with this true (same rule CLAUDE.md documents for
+      why NRT fixtures need a non-null case: policy must only touch
+      Unknown, never override an explicit annotation).
+    }
+    class method ShouldMarkUnknown(aKind: NullabilityKind; aUnknownPolicy: NrtUnknownPolicy): Boolean;
+    begin
+      result := (aKind = NullabilityKind.Unknown) and (aUnknownPolicy = NrtUnknownPolicy.MarkUnknown);
     end;
 
     class method EmitType(aSb: StringBuilder; aType: IrTypeLite; aEnumStyle: EnumStyle; aUnknownPolicy: NrtUnknownPolicy; aPad: String;
@@ -66,8 +83,10 @@ type
           end;
 
           var opt := '';
-          if ResolveNullable(m.Nullability, aUnknownPolicy) then opt := ' | null';
-          aSb.AppendLine(aPad + '  ' + m.Name + ': ' + tsType + opt + ';');
+          if ResolveNullableSuffix(m.Nullability, aUnknownPolicy) then opt := ' | null';
+          var unknownComment := '';
+          if ShouldMarkUnknown(m.Nullability, aUnknownPolicy) then unknownComment := ' // nrt: unknown';
+          aSb.AppendLine(aPad + '  ' + m.Name + ': ' + tsType + opt + ';' + unknownComment);
         end;
         aSb.AppendLine(aPad + '}');
       end;

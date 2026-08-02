@@ -9,8 +9,9 @@ declare namespace SampleModel {
   export interface User {
     Id: string;
     DisplayName: string | null;
-    Age: number | null;
-    IsAdmin: boolean | null;
+    Age: number;
+    IsAdmin: boolean;
+    Notes: string | null;
     FirstName: string | null;
     LastName: string | null;
   }

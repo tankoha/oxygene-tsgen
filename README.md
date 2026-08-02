@@ -4,19 +4,30 @@
 > Oxygene (RemObjects Elements, .NET / Echoes target). Primary use case:
 > generating Props types for **Inertia.js** page components (ASP.NET Core +
 > Inertia.js) directly from controller code — see "What Is This?" below.
-> **Status: design phase complete, implementation not yet started.** See
-> [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
+> **Status: Phase 1 (design) is complete, and Phase 2 (implementation) has a
+> working, snapshot-tested CLI — but only for the *generic* assembly →
+> `.d.ts` path.** The Inertia.js-specific parts that are this tool's actual
+> primary use case (entry-point-driven discovery of `Inertia.Render` call
+> sites, Page Props / Shared Data / form-error types) have not been started
+> yet. See "CLI Usage" and "Current Status" below for what actually exists
+> today, [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
 > [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語) for the full design, and
-> [`HANDOFF.md`](HANDOFF.md) for open questions and the Phase 2 starting point.
+> [`HANDOFF.md`](HANDOFF.md) for the detailed build log and open questions.
 >
 > .NET アセンブリ → TypeScript 型定義 (`.d.ts`) 生成 CLI ツール。Oxygene
 > (RemObjects Elements, .NET / Echoes ターゲット) で実装。主な用途は、
 > ASP.NET Core + **Inertia.js** 構成のControllerコードから、Inertia.jsページ
 > コンポーネント向けのProps型を直接生成することです (詳細は下記「これは何か」参照)。
-> **現在のステータス: 設計フェーズ完了、実装は未着手です。** 設計の詳細は
+> **現在のステータス: Phase 1 (設計) は完了し、Phase 2 (実装) は
+> スナップショットテスト済みの動くCLIがあります — ただし対応しているのは
+> 汎用的なアセンブリ→`.d.ts`の経路のみです。** このツール本来の主な用途で
+> あるInertia.js固有の部分 (`Inertia.Render`呼び出し箇所をエントリー
+> ポイントとする検出、Page Props/共有データ/フォームエラー型) はまだ
+> 着手していません。現時点で実際に存在するものは下記「CLIの使い方」
+> 「現在のステータス」を、設計の詳細は
 > [`docs/DESIGN.md`](docs/DESIGN.md) (英語) /
-> [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語)、未解決事項とPhase 2の
-> 着手点は [`HANDOFF.md`](HANDOFF.md) を参照してください。
+> [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語)を、詳細な作業ログと
+> 未解決事項は [`HANDOFF.md`](HANDOFF.md) を参照してください。
 
 ## What Is This? / これは何か
 
@@ -115,15 +126,87 @@ Oxygene (Object Pascal 系言語、.NET ターゲットの Echoes バックエ�
 
 ## Current Status / 現在のステータス
 
-**Phase 1 (design phase) complete. Implementation (Phase 2) has not started.**
+**Phase 1 (design) is complete. Phase 2 (implementation) has a working CLI
+for the generic assembly → `.d.ts` path, hardened well past the original
+MVP bullet list — but the Inertia.js-specific features that are this
+tool's actual primary use case ("What Is This?" above) have not been
+started.**
 
-**Phase 1 (設計フェーズ) 完了。実装 (Phase 2) は未着手です。**
+**Phase 1 (設計) は完了。Phase 2 (実装) は、汎用的なアセンブリ→`.d.ts`
+の経路について、当初のMVP箇条書きをかなり超えてハードニングされた
+動くCLIがあります — ただし、このツール本来の主な用途である
+Inertia.js固有の機能 (上記「これは何か」参照) にはまだ着手していません。**
 
-This repository does not yet contain any implementation code. `src/` and
-`tests/` exist only as empty directories.
+**Implemented (`src/Tsgen`, see [`CLAUDE.md`](CLAUDE.md) and
+[`HANDOFF.md`](HANDOFF.md) §12–§21 for the full build log):**
 
-このリポジトリには現時点で実装コードは含まれていません。
-`src/`, `tests/` はディレクトリのみ用意されており、内容は空です。
+- Stage 1 Loader — metadata-only assembly loading via
+  `System.Reflection.MetadataLoadContext` (no execution of target code).
+  Skips non-public/nested/generic types, with a warning naming the count.
+- NRT (nullable reference type) resolution via a swappable
+  `INullabilityProvider` chain (`docs/DESIGN.md` §4.2): a
+  Tokenizer-based Oxygene source scan (`--source <dir>`) as the primary
+  provider, falling back to "known CLR value types are non-nullable by
+  default" for anything the scan has no opinion on. Handles multi-type
+  `type` sections and indexer-style properties; nested types are a known,
+  documented gap (`HANDOFF.md` §18.1/§20).
+- Stage 2 IR — a lightweight intermediate representation carrying raw CLR
+  type names and tri-state nullability, unresolved until the emitter.
+- Stage 4 Emitter — single-file `.d.ts` output, namespace-nested, with a
+  hardcoded primitive/BCL type-mapping table (the full pluggable
+  `ITypeMappingRule` chain is not yet implemented) and a choice of enum
+  style and NRT-unknown-member policy (see "CLI Usage" below).
+- A `Tsgen.Diagnostics` component: pipeline stages return diagnostics
+  instead of writing to the console directly, deduplicated and printed to
+  stderr by the CLI.
+- Automated snapshot tests (`tools/run-tests.ps1`): 4 fixtures, 10 cases,
+  covering enums, explicit/implicit NRT, tokenizer edge cases (comments,
+  string literals, no trailing newline), multi-type sections, indexer
+  properties, and a nested-type dictionary-corruption regression.
+
+**実装済み (`src/Tsgen`。詳細な作業ログは [`CLAUDE.md`](CLAUDE.md) と
+[`HANDOFF.md`](HANDOFF.md) §12–§21 を参照):**
+
+- Stage 1 Loader — `System.Reflection.MetadataLoadContext` によるメタデータ
+  のみのアセンブリ読み込み (対象コードを実行しない)。非public/nested/
+  generic な型はスキップし、件数を警告として表示。
+- NRT (nullable参照型) の解決は、差し替え可能な `INullabilityProvider`
+  チェーン (`docs/DESIGN.md` §4.2) 経由: Tokenizerベースの Oxygene
+  ソーススキャン (`--source <dir>`) を主プロバイダとし、スキャンが
+  判定できないものについては「既知のCLR値型は既定でnon-nullable」に
+  フォールバックする。1つの`type`セクション内の複数型宣言やindexer形式の
+  プロパティに対応。nested typesは既知の、文書化済みの未対応事項
+  (`HANDOFF.md` §18.1/§20)。
+- Stage 2 IR — 生のCLR型名と三値のnullabilityを、Emitterまで未解決の
+  まま運ぶ軽量な中間表現。
+- Stage 4 Emitter — 単一ファイルの`.d.ts`出力、namespaceでネスト、
+  ハードコードされたプリミティブ/BCL型マッピング表 (完全にプラガブルな
+  `ITypeMappingRule`チェーンは未実装) を使用し、enumスタイルと
+  NRT-unknownメンバーのポリシーを選択可能 (下記「CLIの使い方」参照)。
+- `Tsgen.Diagnostics`コンポーネント: パイプラインの各ステージはコンソール
+  に直接書き込む代わりに診断情報を返し、CLIが重複排除した上でstderrへ
+  出力する。
+- 自動化されたスナップショットテスト (`tools/run-tests.ps1`): 4フィクスチャ・
+  10ケース。enum、明示的/暗黙的NRT、トークナイザのエッジケース (コメント、
+  文字列リテラル、末尾改行なし)、複数型セクション、indexerプロパティ、
+  nested type辞書汚染の回帰テストをカバー。
+
+**Not yet implemented / 未実装:**
+
+- The Inertia.js-specific features that are this tool's primary use case
+  (entry-point-driven discovery of `Inertia.Render` calls, Page Props /
+  Shared Data / form-error types — `docs/DESIGN.md` §6, `HANDOFF.md` §6).
+- Cycle detection, generics, the pluggable type-mapping/plugin chain,
+  split-file output, real nested-type support (`docs/DESIGN.md` §10.2 has
+  the post-MVP priority order).
+
+- このツールの主な用途であるInertia.js固有の機能
+  (`Inertia.Render`呼び出しをエントリーポイントとする検出、
+  Page Props/共有データ/フォームエラー型 — `docs/DESIGN.md` §6、
+  `HANDOFF.md` §6)。
+- 循環参照検出、ジェネリクス、プラガブルな型マッピング/pluginチェーン、
+  split-file出力、nested typesの本当のサポート
+  (post-MVPの優先順位は `docs/DESIGN.md` §10.2 参照)。
 
 - Design document: [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
   [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語)
@@ -135,14 +218,83 @@ This repository does not yet contain any implementation code. `src/` and
   — アーキテクチャ、型マッピング層、循環参照検出、NRT解析方針、プラグイン機構、
   出力パイプライン、CI設計、MVPスコープと実装順序の提案を含みます。
 - Handoff notes: [`HANDOFF.md`](HANDOFF.md)
-  — points that were difficult to decide during design, unverified points
-  around Oxygene's `System.Reflection` compatibility, and the priority order
-  of tasks Phase 2 should tackle first.
+  — the full session-by-session build log: what was verified hands-on,
+  design decisions and why, bugs found and fixed, and the current task
+  priority list.
   申し送り事項: [`HANDOFF.md`](HANDOFF.md)
-  — 設計判断で迷った点、Oxygeneの `System.Reflection` 互換性に関する
-  未検証事項、Phase 2で最初に着手すべきタスクの優先順位。
+  — セッションごとの詳細な作業ログ: 実機で検証した内容、設計判断とその理由、
+  発見・修正したバグ、現在のタスク優先順位。
+
+## CLI Usage / CLIの使い方
+
+Build with `tools/dev-build.ps1` (not `EBuild.exe` directly — see
+[`CLAUDE.md`](CLAUDE.md) for why), then run:
+
+`tools/dev-build.ps1` でビルドしてください (`EBuild.exe` を直接使わない
+理由は [`CLAUDE.md`](CLAUDE.md) 参照)。ビルド後は以下のように実行します:
+
+```
+tsgen generate --assembly <path.dll> --source <dir> --out <dir> \
+  [--enum-style numeric|union] \
+  [--nrt-unknown-policy nullable|non-null|mark-unknown]
+```
+
+- `--assembly` (required) — path to the built target `.dll`, loaded as
+  metadata only via `MetadataLoadContext`.
+  (必須) — 対象の `.dll`。`MetadataLoadContext` でメタデータのみ読み込む。
+- `--source` (optional, strongly recommended) — directory containing the
+  target's Oxygene `.pas` source. Without it, the CLI warns and every
+  member falls back to `--nrt-unknown-policy`'s default, since reflection
+  alone cannot recover NRT info for Oxygene-authored code at all (see
+  "Known unresolved technical risk" in [`CLAUDE.md`](CLAUDE.md)).
+  (オプション、強く推奨) — 対象のOxygene `.pas` ソースが入っている
+  ディレクトリ。省略するとCLIが警告を出し、全メンバーが
+  `--nrt-unknown-policy` の既定値にフォールバックする。Oxygene製コードは
+  reflectionだけではNRT情報を一切復元できないため
+  ([`CLAUDE.md`](CLAUDE.md) の「未解決の技術リスク」参照)。
+- `--out` (required) — output directory; writes `index.d.ts` there.
+  (必須) — 出力先ディレクトリ。そこに `index.d.ts` を書き出す。
+- `--enum-style` — `numeric` (default, `export enum Foo { A = 0, ... }`)
+  or `union` (`export type Foo = "A" | "B" | ...;`).
+  `numeric` (既定、`export enum Foo { A = 0, ... }`) または `union`
+  (`export type Foo = "A" | "B" | ...;`)。
+- `--nrt-unknown-policy` — how to render a member whose nullability is
+  genuinely `Unknown` after the `INullabilityProvider` chain runs (an
+  explicit `nullable`/`not nullable` annotation always wins regardless of
+  this flag; an unannotated *value-typed* member such as `Int32`/
+  `Boolean`/`DateTime`/`Guid` resolves to not-nullable automatically and
+  is **not** affected by this flag either — only unannotated
+  *reference-typed* members are genuinely `Unknown`):
+  「`INullabilityProvider`チェーンを通しても本当に`Unknown`のままの
+  メンバーをどう出力するか」を指定 (明示的な`nullable`/`not nullable`
+  注釈があれば、このフラグに関係なく常にそちらが優先される。
+  `Int32`/`Boolean`/`DateTime`/`Guid`のような無注釈の*値型*メンバーは
+  自動的にnon-nullableへ解決されるため、このフラグの影響を**受けない** —
+  このフラグが効くのは、無注釈の*参照型*メンバーが本当に`Unknown`の
+  場合のみ):
+  - `nullable` (default) — `T | null`
+  - `non-null` — `T`
+  - `mark-unknown` — `T; // nrt: unknown` (bare type, same as `non-null`,
+    plus a trailing comment — TypeScript's type system has no way to
+    express "nullability undetermined" as distinct from "confirmed
+    non-nullable", so a comment is what keeps it visually/grep-ably
+    distinct)
+    (`non-null`と同じ素の型に、末尾の行コメントを付与したもの —
+    TypeScriptの型システムには「nullability未確定」を「non-nullable
+    確定」と区別して表現する手段がないため、コメントで目視・grep両方
+    から区別できるようにしている)
 
 ## MVP (Phase 2 Initial Target) / MVP (Phase 2 最初の到達目標)
+
+**✅ Implemented** — this was the originally-scoped MVP target, and the
+actual build now exceeds it (multi-type sections, indexer properties, the
+`INullabilityProvider` chain, `mark-unknown`; see "Current Status"
+above):
+
+**✅ 実装済み** — これは当初スコープしていたMVPの到達目標であり、
+実際のビルドは既にこれを超えています (複数型セクション、indexer
+プロパティ、`INullabilityProvider`チェーン、`mark-unknown`など。
+上記「現在のステータス」参照):
 
 - Basic type mapping (primitives, known BCL types)
   基本型マッピング (プリミティブ型、既知のBCL型)
@@ -150,8 +302,12 @@ This repository does not yet contain any implementation code. `src/` and
   enum (数値 or 文字列リテラルUnion、設定で選択)
 - Reflecting nullable reference types
   nullable参照型の反映
-- `.d.ts` output following a namespace → ES module hierarchy
-  名前空間 → ESモジュール階層での `.d.ts` 出力
+- `.d.ts` output following a namespace → ES module hierarchy (the
+  single-file half of this — split-file/ES-module output is still
+  post-MVP, see `docs/DESIGN.md` §7.3)
+  名前空間 → ESモジュール階層での `.d.ts` 出力 (このうち単一ファイル側
+  のみ実装済み。split-file/ESモジュール出力は引き続きpost-MVP、
+  `docs/DESIGN.md` §7.3 参照)
 
 See [`docs/DESIGN.md` §10](docs/DESIGN.md#10-mvp-scope-and-the-boundary-for-future-extensions)
 / [`docs/DESIGN_jp.md` §10](docs/DESIGN_jp.md#10-mvpスコープと将来拡張の境界線) for details.
@@ -165,16 +321,29 @@ See [`docs/DESIGN.md` §10](docs/DESIGN.md#10-mvp-scope-and-the-boundary-for-fut
 ```
 oxygene-tsgen/
 ├── README.md
-├── LICENSE                   # MIT
-├── HANDOFF.md                 # Handoff notes (English) / セッション間の申し送り事項 (英語版)
-├── HANDOFF_jp.md               # Handoff notes (Japanese) / セッション間の申し送り事項 (日本語版)
+├── LICENSE                     # MIT
+├── CLAUDE.md                   # Repo/architecture guidance for AI coding agents / AIエージェント向けリポジトリ・アーキテクチャ解説
+├── HANDOFF.md                  # Handoff notes (English) / セッション間の申し送り事項 (英語版)
+├── HANDOFF_jp.md                # Handoff notes (Japanese) / セッション間の申し送り事項 (日本語版)
 ├── docs/
-│   ├── DESIGN.md               # Design document (English) / 設計書 (英語版)
-│   └── DESIGN_jp.md            # Design document (Japanese) / 設計書 (日本語版)
-├── src/                       # Implementation (Phase 2, currently empty) / 実装 (Phase 2、現時点では空)
-├── tests/                     # Tests (Phase 2, currently empty) / テスト (Phase 2、現時点では空)
+│   ├── DESIGN.md                # Design document (English) / 設計書 (英語版)
+│   └── DESIGN_jp.md             # Design document (Japanese) / 設計書 (日本語版)
+├── reports/
+│   └── *-issue-tracker.csv      # Per-session issue log (found/fixed, cross-referenced with HANDOFF.md) / セッションごとの課題管理表 (発見/対応、HANDOFF.mdと相互参照)
+├── src/Tsgen/                  # CLI implementation (Oxygene) / CLI実装 (Oxygene)
+│   ├── Cli/Program.pas          # Argument parsing + pipeline wiring / 引数解析とパイプライン結線
+│   ├── Loading/                 # Stage 1: MetadataLoadContext-based assembly loader / Stage 1: MetadataLoadContextベースのアセンブリローダー
+│   ├── Nrt/                     # Tokenizer-based NRT source scanner + INullabilityProvider chain / Tokenizerベースの NRT ソーススキャナ + INullabilityProvider チェーン
+│   ├── Ir/                      # Stage 2: lightweight IR + hardcoded type mapper / Stage 2: 軽量IR + ハードコードされた型マッパー
+│   ├── Emit/DtsEmitter.pas      # Stage 4: single-file .d.ts emitter / Stage 4: 単一ファイル .d.ts エミッター
+│   ├── Diagnostics/             # Pipeline-stage diagnostics (see CLAUDE.md) / パイプラインステージの診断情報 (CLAUDE.md参照)
+│   └── Tsgen.elements           # Project file / プロジェクトファイル
+├── tests/fixtures/              # Snapshot-test fixtures (.pas + cases.json + expected/*.d.ts) / スナップショットテストのフィクスチャ
+├── tools/
+│   ├── dev-build.ps1            # Build wrapper working around an EBuild deps.json gap / EBuildのdeps.jsonの穴を回避するビルドラッパー
+│   └── run-tests.ps1            # Snapshot-test runner / スナップショットテストランナー
 └── .github/
-    └── workflows/             # CI (Phase 2, placeholder only for now) / CI (Phase 2、現時点ではplaceholderのみ)
+    └── workflows/               # CI (Phase 2, placeholder only for now) / CI (Phase 2、現時点ではplaceholderのみ)
 ```
 
 ## License / ライセンス

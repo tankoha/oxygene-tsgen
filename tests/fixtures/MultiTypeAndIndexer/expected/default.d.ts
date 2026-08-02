@@ -11,6 +11,6 @@ declare namespace MultiTypeAndIndexer {
   export interface Beta {
     Name: string;
     Item: string;
-    Count: number | null;
+    Count: number;
   }
 }
