@@ -2202,3 +2202,175 @@ and record the Oxygene object-initializer gotcha from §22.3 as a
 load-bearing fact the detection design depends on. Not rewritten in full
 here — flagged for the next pass, same as `docs/DESIGN.md` §4's revision
 was tracked before it was actually done (`HANDOFF.md` §8.3 → §13).
+
+---
+
+## 23. Generics support implemented (Windows hands-on, 2026-08-02)
+
+`docs/DESIGN.md` §10.2 item 1 ("Generalizing generics (`List<T>`,
+`Dictionary<K,V>`), inheritance/interfaces"), picked up ahead of the
+entry-point scanner itself (§22) per the ordering discussed this
+session: real Page Props DTOs will almost certainly use collections, so
+building the scanner before generics support existed would have produced
+output that couldn't render them.
+
+### 23.1 Scope decided before writing code
+
+User confirmed two forks up front:
+
+1. **Cycle detection (Tarjan SCC) deferred, generics done alone this
+   round.** `docs/DESIGN.md` §3.3 states cycles can generally be ignored
+   for `DtsEmitter` specifically (TS `interface`/`type` declarations
+   tolerate circular references natively) — its main value is the
+   zod `SchemaEmitter` (not built) and single-file output ordering
+   (cosmetic). Building full Tarjan SCC now, before either of those
+   exist, would be exactly the kind of premature infrastructure
+   `CLAUDE.md` says to avoid. Revisit when the zod emitter is actually
+   built.
+2. **Inheritance already works, verified hands-on, no code needed.** A
+   probe class hierarchy confirmed `t.GetProperties(Public|Instance)`
+   (no `DeclaredOnly`) already returns inherited base-class properties
+   alongside a derived type's own — this was already true before this
+   session's changes; `docs/DESIGN.md` grouping it with generics as one
+   post-MVP item didn't mean it needed separate implementation.
+
+### 23.2 What was added
+
+**`RawTypeRef`** (new type in `src/Tsgen/Loading/RawModel.pas`):
+structural CLR type reference — `FullName`, `IsArray`/`ElementType`,
+`TypeArguments: List<RawTypeRef>` — built recursively from `System.Type`
+via a new `AssemblyLoader.BuildTypeRef` using `GetElementType()`/
+`GetGenericArguments()` directly, never `Type.FullName`'s mangled,
+assembly-qualified generic-argument string (confirmed hands-on this
+matters: `List<Foo>.FullName` looks like
+`"System.Collections.Generic.List\`1[[Foo, MyAsm, Version=...]]"` — not
+something worth string-parsing when the real API gives clean pieces
+directly). `RawMember.ClrTypeName: String` → `RawMember.TypeRef:
+RawTypeRef` throughout — `IrMemberLite` reuses `RawTypeRef` directly
+(same "reuse, don't duplicate" pattern already used for
+`NullabilityKind`).
+
+**`TypeMapper.MapClrTypeName(String)` → `TypeMapper.MapTypeRef(RawTypeRef,
+HashSet<String>)`**: recursive over the new structural type. Handles, in
+order: arrays (element-type recursion + `[]`), `Nullable<T>`/`Task<T>`/
+`ValueTask<T>` (docs/DESIGN.md §2.2's named "special cases" — unwrap to
+the single type argument's mapping; `Nullable<T>`'s nullability itself
+stays a `Tsgen.Nrt` concern, not doubled up here), `List<T>`/`IList<T>`/
+`IEnumerable<T>`/`ICollection<T>`/`IReadOnlyList<T>`/
+`IReadOnlyCollection<T>`/`HashSet<T>`/`ISet<T>` → `T[]`,
+`Dictionary<K,V>`/`IDictionary<K,V>`/`IReadOnlyDictionary<K,V>` →
+`Record<K, V>` when `K` maps to `string`/`number` (else `unknown` — no
+clean JSON-shaped TS equivalent for non-primitive keys), then the
+existing known-BCL-primitive leaf mapping, unchanged.
+
+**`INullabilityProvider.TryGetNullability`'s `aClrTypeName: String` →
+`aTypeRef: RawTypeRef`** (`Tsgen.Nrt.NullabilityProviders`, `Tsgen.Nrt`
+gained a one-way dependency on `Tsgen.Loading` — no cycle, `Tsgen.Loading`
+depends on neither). `ValueTypeDefaultProvider` now also recognizes
+`Nullable<T>` (CLR `FullName = "System.Nullable\`1"`) as always
+`IsNullable`, regardless of `T` — confirmed hands-on that Oxygene's
+`nullable Int32` on a value type really does compile to
+`System.Nullable\`1[[System.Int32]]`, not some Oxygene-specific
+encoding. This is a real capability gain, not just plumbing: previously
+*every* member was `Unknown` without `--source`; now a `Nullable<T>`-typed
+member resolves correctly via reflection *alone*, no source access
+needed — confirmed by running the new fixture with `--source` omitted
+(§23.3).
+
+### 23.3 Bug found mid-implementation: user-defined types had no
+resolution path at all
+
+Building the `Generics` fixture (a self-referential `Node` type with a
+`List<Node>` member) surfaced a real gap that predates this session's
+generics work but was invisible until generics support made it
+observable: `TypeMapper` had **never** had a branch for "this leaf CLR
+type isn't a BCL primitive, but it IS one of our own emitted types" —
+any property of a custom type (even a plain, non-generic one) silently
+fell to `'unknown'`. `List<Node>` exposed this immediately as
+`unknown[]` instead of `Node[]`.
+
+Fixed by adding `DtsEmitter.Emit`-built `aKnownTypes: HashSet<String>`
+(every `IrTypeLite`'s `Namespace.Name`, covering both class-like and
+enum types), threaded through `MapTypeRef`: a leaf type found in this
+set resolves to a reference by its own fully-qualified name
+(`Namespace.Name`, e.g. `Generics.Node`) rather than falling through to
+`unknown`. Always fully qualified, never the bare short name — TS's
+`declare namespace A.B` blocks accept dotted-namespace references
+regardless of which namespace block the reference site is in, so this
+is correct without tracking "am I in the same namespace as what I'm
+referencing." This is `docs/DESIGN.md` §2.2 chain step "③e. User-defined
+types" in miniature — the first time it's existed in any form.
+
+Named-type references are never structurally expanded (`Node`'s own
+`List<Node>` member just says `"Node[]"`, it doesn't inline `Node`'s
+shape again) — confirmed by the `Generics` fixture actually building
+and running without any infinite loop, which is the concrete
+verification behind §23.1's decision that Tarjan SCC isn't load-bearing
+for `DtsEmitter` yet.
+
+### 23.4 New fixture: `tests/fixtures/Generics`
+
+`Tag` (a plain named type) and self-referential `Node` (`Value: not
+nullable String`; `Children: List<Node>`; `Tags: List<Tag>`; `Scores:
+List<Int32>`; `Lookup: Dictionary<String, Int32>`; `MaybeCount: nullable
+Int32`; `Numbers: array of Int32`). Two cases locked in via the normal
+convention (`default`, `non-null`): confirms `Generics.Node[]`/
+`Generics.Tag[]` (named-type + self-reference), `number[]` (`List<Int32>`
+element unwrapping), `Record<string, number>` (`Dictionary` → `Record`),
+`number[]` for the plain array, and `MaybeCount: number | null` staying
+`| null` under *both* policies (explicit annotation, unaffected by
+policy) while the unannotated reference-type-generic members correctly
+flip with the policy.
+
+**Third case verified hands-on but not locked into the snapshot suite**:
+running with `--source` omitted entirely and `--nrt-unknown-policy
+non-null`. Every reference-type-generic member (`Children`, `Tags`,
+`Scores`, `Lookup`, `Numbers`) correctly lost `| null` (genuinely
+`Unknown` without source, non-null policy applies) — but `MaybeCount`
+*kept* `| null`, proving `ValueTypeDefaultProvider`'s new `Nullable<T>`
+detection fires from reflection alone. Not added as a permanent
+`cases.json` entry because `tools/run-tests.ps1` always passes
+`--source <fixtureDir>` unconditionally for every case (no per-case way
+to omit it today) — extending the shared runner for one narrow scenario
+wasn't judged worth it this round; the finding is preserved here as a
+verified fact instead. If `--source`-omission ever needs to be a
+permanent regression test, the runner needs a case-level opt-out flag
+first.
+
+### 23.5 Verification
+
+- `tools/dev-build.ps1`: clean build (one real syntax error hit and
+  fixed along the way — see §23.6).
+- `tools/run-tests.ps1 -UpdateSnapshots` then plain `tools/run-tests.ps1`:
+  **12/12 cases pass** across all five fixtures (`Generics` ×2 new,
+  the previous eight unchanged). `git diff` on all four pre-existing
+  fixtures' snapshots: empty — no regressions from the `RawTypeRef`
+  plumbing change touching every stage from Loader to Emitter.
+
+### 23.6 Oxygene gotcha hit while writing doc comments (not a design
+issue, noting for future sessions)
+
+A doc comment containing a literal TypeScript code sample with curly
+braces (`` `declare namespace A.B { ... }` ``) broke the build with a
+cascade of confusing parser errors starting well past the actual
+problem line. Root cause: Oxygene's `{ }` block comments do not nest —
+the first inner `}` in the sample closed the comment early, and
+everything after that up to the *real* next `}` was parsed as live
+code. Fixed by rephrasing the comment to avoid literal braces. Worth
+remembering: never put brace-containing code samples inside a `{ }`
+comment in this codebase; use prose description or a `//` line comment
+instead if a literal sample is really needed.
+
+### 23.7 What this does not change
+
+- Cycle detection (Tarjan SCC) remains unimplemented, deliberately
+  (§23.1) — revisit when the zod `SchemaEmitter` is built, where it's
+  actually load-bearing.
+- Provider 2 (reflection-attribute-based NRT), the plugin mechanism,
+  split-file output, and the Inertia-specific entry-point scanner (§22)
+  are all still separately unimplemented — this section only covers
+  `docs/DESIGN.md` §10.2 item 1.
+- `Task<T>`/`ValueTask<T>` unwrapping was added to `TypeMapper` (§23.2)
+  since it was cheap and explicitly named in `docs/DESIGN.md` §2.2, but
+  nothing yet *produces* an async-wrapped member to exercise it against
+  — no fixture coverage for this specific branch yet.

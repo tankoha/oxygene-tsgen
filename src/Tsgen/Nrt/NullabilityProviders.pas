@@ -1,7 +1,8 @@
 namespace Tsgen.Nrt;
 
 uses
-  System.Collections.Generic;
+  System.Collections.Generic,
+  Tsgen.Loading;
 
 type
   {
@@ -10,15 +11,18 @@ type
     order, and the first one returning something other than Unknown wins
     (the same "first match wins" philosophy as the type-mapping chain).
     Adapted to the concrete data this tool actually has today (a type's
-    full name, a member name, and its raw CLR type name as a string)
+    full name, a member name, and its raw structural type reference)
     rather than the design doc's more abstract IrMemberRef/AnalysisContext
     sketch -- there is no reflection-attribute provider wired in yet
     (docs/DESIGN.md §4.2 Provider 2, still genuinely unimplemented,
     post-MVP), so the concrete shape here only needs to carry what
-    Provider 1 and Provider 3 actually use.
+    Provider 1 and Provider 3 actually use. Takes a Tsgen.Loading.RawTypeRef
+    (not just a flat type-name string) so Provider 3 can recognize
+    Nullable<T> regardless of what T is -- this needs the structural
+    generic-argument info a plain string can't carry.
   }
   INullabilityProvider = public interface
-    method TryGetNullability(aTypeFullName: String; aMemberName: String; aClrTypeName: String): NullabilityKind;
+    method TryGetNullability(aTypeFullName: String; aMemberName: String; aTypeRef: RawTypeRef): NullabilityKind;
   end;
 
   {
@@ -35,7 +39,7 @@ type
       fScanResult := aScanResult;
     end;
 
-    method TryGetNullability(aTypeFullName: String; aMemberName: String; aClrTypeName: String): NullabilityKind;
+    method TryGetNullability(aTypeFullName: String; aMemberName: String; aTypeRef: RawTypeRef): NullabilityKind;
     begin
       var key := aTypeFullName + '.' + aMemberName;
       if fScanResult.ContainsKey(key) then
@@ -51,17 +55,27 @@ type
     member WAS explicitly annotated ("nullable Int32"), Provider 1 already
     caught that and this provider never runs (the chain stops at the
     first non-Unknown answer). This only fires for the "no annotation at
-    all" case, matching C#'s own default. The known-type-name set
+    all" case, matching C#'s own default. Also recognizes Nullable<T>
+    (Oxygene's "nullable Int32" on a value type compiles to
+    System.Nullable`1[[Int32]], confirmed hands-on) as always nullable,
+    regardless of T -- Nullable<T> IS the CLR's own "this value type is
+    nullable" marker, so no policy judgment is being made here, just
+    reading what the type already says. The known-type-name set
     intentionally mirrors Tsgen.Ir.TypeMapper's set, kept as a separate
     list rather than a shared call to avoid a Tsgen.Ir <-> Tsgen.Nrt
     circular unit reference (Tsgen.Ir already depends on Tsgen.Nrt
-    one-way) -- keep both lists in sync if either changes.
+    one-way) -- keep both lists in sync if either changes. Reference-typed
+    generics (List<T>, Dictionary<K,V>, arrays, ...) are deliberately NOT
+    touched here -- like any other reference type, "no annotation" means
+    Unknown, not an auto-resolved default, so they fall through unchanged.
   }
   ValueTypeDefaultProvider = public class(INullabilityProvider)
   public
-    method TryGetNullability(aTypeFullName: String; aMemberName: String; aClrTypeName: String): NullabilityKind;
+    method TryGetNullability(aTypeFullName: String; aMemberName: String; aTypeRef: RawTypeRef): NullabilityKind;
     begin
-      if IsKnownValueType(aClrTypeName) then
+      if aTypeRef.FullName = 'System.Nullable`1' then
+        result := NullabilityKind.IsNullable
+      else if IsKnownValueType(aTypeRef.FullName) then
         result := NullabilityKind.IsNotNullable
       else
         result := NullabilityKind.Unknown;
@@ -87,11 +101,11 @@ type
   }
   NullabilityProviderChain = public static class
   public
-    class method Resolve(aProviders: List<INullabilityProvider>; aTypeFullName: String; aMemberName: String; aClrTypeName: String): NullabilityKind;
+    class method Resolve(aProviders: List<INullabilityProvider>; aTypeFullName: String; aMemberName: String; aTypeRef: RawTypeRef): NullabilityKind;
     begin
       result := NullabilityKind.Unknown;
       for each provider in aProviders do begin
-        var kind := provider.TryGetNullability(aTypeFullName, aMemberName, aClrTypeName);
+        var kind := provider.TryGetNullability(aTypeFullName, aMemberName, aTypeRef);
         if kind <> NullabilityKind.Unknown then begin
           result := kind;
           exit;

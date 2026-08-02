@@ -1082,9 +1082,25 @@ As agreed at requirements-definition time, the following is the minimum bar:
 
 ### 10.2 Features Added Incrementally After MVP (Rough Priority Order)
 
-1. Generalizing generics (`List<T>`, `Dictionary<K,V>`), inheritance/interfaces
+1. ~~Generalizing generics (`List<T>`, `Dictionary<K,V>`), inheritance/interfaces~~
+   **Implemented 2026-08-02 — see `HANDOFF.md` §23.** Inheritance/interfaces
+   needed no work (already correct via `System.Type.GetProperties` without
+   `DeclaredOnly`, confirmed hands-on). Generics: `RawTypeRef` (structural CLR
+   type reference) + recursive `TypeMapper.MapTypeRef`, covering arrays,
+   `List<T>`-family → `T[]`, `Dictionary<K,V>`-family → `Record<K,V>` (string/
+   number keys only), `Nullable<T>`/`Task<T>`/`ValueTask<T>` unwrapping, and
+   (a gap discovered along the way, not previously implemented in any form)
+   resolving references to the tool's own emitted types by name instead of
+   falling to `unknown`.
 2. Cycle detection (§3) — needed more as the number of types grows, so tackled
-   right after the MVP
+   right after the MVP. **Deliberately deferred alongside item 1's
+   implementation (`HANDOFF.md` §23.1)**: §3.3 already states cycles can
+   generally be ignored for `DtsEmitter` specifically, since TS `interface`/
+   `type` declarations tolerate circular references natively — named-type
+   generic references (item 1) don't structurally expand, so self-/mutually-
+   referential types already work without it (confirmed via a self-referential
+   fixture). Revisit once the zod `SchemaEmitter` is actually built, where
+   `lazy()`-wrapping makes it load-bearing rather than cosmetic.
 3. XML Doc → JSDoc, `[Obsolete]` → `@deprecated` (prioritized within the
    metadata layer for its low implementation cost and high payoff)
 4. Naming conversion via `System.Text.Json` attributes

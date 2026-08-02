@@ -9,29 +9,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-Phase 1 (design) is complete. Phase 2 (implementation) has a working MVP:
-`src/Tsgen` is a CLI (`tsgen generate --assembly <dll> --source <dir>
---out <dir>`) covering Stage 1 (Loader, via `MetadataLoadContext`), a
-Tokenizer-based NRT source scanner, a lightweight Stage 2 IR, and a
-single-file Stage 4 `DtsEmitter` — see `HANDOFF.md` §12 for what was
-built, how, and its known limitations. Still missing: cycle detection,
-generics, the pluggable type-mapping/plugin chain, and split-file output
-(`docs/DESIGN.md` §10.2 has the post-MVP order).
+Phase 1 (design) is complete. Phase 2 (implementation) has a working MVP,
+hardened well past the original bullet list: `src/Tsgen` is a CLI (`tsgen
+generate --assembly <dll> --source <dir> --out <dir>`) covering Stage 1
+(Loader, via `MetadataLoadContext`), a Tokenizer-based NRT source scanner
+feeding an `INullabilityProvider` chain, a lightweight Stage 2 IR with
+generics support (`List<T>`/`Dictionary<K,V>`/`Nullable<T>`/arrays/
+user-defined-type references), and a single-file Stage 4 `DtsEmitter` —
+see `HANDOFF.md` §12/§23 for what was built, how, and its known
+limitations. Still missing: cycle detection (deliberately deferred, see
+below), the pluggable type-mapping/plugin chain, split-file output, and
+the Inertia.js-specific entry-point scanner (spiked and confirmed
+feasible, not yet implemented — `HANDOFF.md` §22). `docs/DESIGN.md`
+§10.2 has the post-MVP order.
 
 **Automated snapshot tests exist now:** run `tools/run-tests.ps1` (builds
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
 output against committed `expected/*.d.ts` snapshots per fixture's
 `cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
-an intentional output change. See `HANDOFF.md` §15. Four fixtures exist,
-10 cases total: `SampleModel` (enums, explicit NRT, all three
+an intentional output change. See `HANDOFF.md` §15. Five fixtures exist,
+12 cases total: `SampleModel` (enums, explicit NRT, all three
 `--nrt-unknown-policy` values via its deliberately-still-`Unknown` `Notes`
 field — see `HANDOFF.md` §21.3 for why that field exists),
 `TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
 trailing newline, also covers `mark-unknown`), `MultiTypeAndIndexer`
 (multiple types sharing one `type` section, indexer-style properties —
-see `HANDOFF.md` §18), and `NestedTypeCollision` (a nested type's
+see `HANDOFF.md` §18), `NestedTypeCollision` (a nested type's
 annotated property must not overwrite an outer, same-named member's
-nullability — see `HANDOFF.md` §20). Nested types themselves remain
+nullability — see `HANDOFF.md` §20), and `Generics` (`List<T>`/
+`Dictionary<K,V>`/`Nullable<T>`/arrays/self-referential named-type
+references — see `HANDOFF.md` §23.4). Nested types themselves remain
 uncovered and out of scope for real
 support: `AssemblyLoader` filters out every `t.IsNested` type before it
 reaches the IR, and `DtsEmitter` has no nested-`interface` output path
@@ -59,6 +66,34 @@ unknown` comment, since TypeScript can't express "undetermined" as a
 distinct type). Provider 2 (reflection-attribute-based, for C#/VB
 dependency assemblies) remains genuinely unimplemented — don't add a stub
 for it without a real need.
+
+**Generics resolve through `RawTypeRef` (`src/Tsgen/Loading/RawModel.pas`)
++ recursive `TypeMapper.MapTypeRef`** (`HANDOFF.md` §23), not a flat
+`ClrTypeName` string — built from `System.Type` via
+`AssemblyLoader.BuildTypeRef` using `GetElementType()`/
+`GetGenericArguments()` directly, never `Type.FullName`'s mangled
+assembly-qualified generic syntax. Covers arrays, `List<T>`-family →
+`T[]`, `Dictionary<K,V>`-family → `Record<K,V>` (string/number keys
+only), and `Nullable<T>`/`Task<T>`/`ValueTask<T>` unwrapping. A leaf type
+that isn't a known BCL primitive but matches one of the assembly's own
+emitted types (tracked as `DtsEmitter.Emit`'s `aKnownTypes` set) resolves
+to a fully-qualified `Namespace.Name` reference instead of falling to
+`unknown` — always fully qualified (never the bare short name), since
+TS's `declare namespace A.B` blocks accept dotted references regardless
+of which namespace block the reference site is in. Named-type references
+are never structurally expanded, so self-/mutually-referential types
+already work without cycle detection (deliberately deferred, see below).
+**Gotcha**: Oxygene's `{ }` block comments don't nest — never put a
+brace-containing code sample inside one (confirmed the hard way,
+`HANDOFF.md` §23.6).
+
+**Cycle detection (Tarjan SCC, `docs/DESIGN.md` §3) is deliberately not
+implemented.** §3.3 already states cycles can generally be ignored for
+`DtsEmitter` specifically (TS `interface`/`type` tolerates circular
+references natively) — its real value is the zod `SchemaEmitter` (not
+built) and single-file output ordering (cosmetic). Don't add it
+speculatively; revisit once the zod emitter actually needs `lazy()`
+wrapping.
 
 When adding an NRT fixture, include both a `--nrt-unknown-policy
 non-null` case and at least one deliberately-unannotated *reference-type*

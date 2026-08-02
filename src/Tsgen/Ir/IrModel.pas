@@ -2,24 +2,28 @@ namespace Tsgen.Ir;
 
 uses
   System.Collections.Generic,
+  Tsgen.Loading,
   Tsgen.Nrt;
 
 type
   {
-    ClrTypeName + Nullability are carried through unresolved -- mapping to
+    TypeRef + Nullability are carried through unresolved -- mapping to
     a TS type string and applying --nrt-unknown-policy both happen in
     Stage 4 (DtsEmitter), not here. An earlier version of this IR stored a
     pre-mapped TsType:String and a pre-resolved IsNullable:Boolean
     directly, which quietly folded Stage 3 into Stage 2 and destroyed the
     "explicitly annotated vs. Unknown+policy" distinction needed for
-    docs/DESIGN.md §4.3's mark-unknown policy. Keeping the raw CLR type
-    name and the tri-state NullabilityKind here instead keeps that
-    information available to whichever emitter/policy needs it.
+    docs/DESIGN.md §4.3's mark-unknown policy. Keeping the raw
+    Tsgen.Loading.RawTypeRef and the tri-state NullabilityKind here
+    instead keeps that information available to whichever emitter/policy
+    needs it. Reusing RawTypeRef directly (rather than a parallel
+    "IrTypeRef") matches the same reuse-not-duplicate pattern already
+    used for NullabilityKind.
   }
   IrMemberLite = public class
   public
     Name: String;
-    ClrTypeName: String;
+    TypeRef: RawTypeRef;
     Nullability: NullabilityKind;
   end;
 

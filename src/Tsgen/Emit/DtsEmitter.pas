@@ -15,7 +15,7 @@ type
     split-file / ES-module layout, deferred -- see HANDOFF.md §11).
 
     Also where Stage 3 (type mapping) and --nrt-unknown-policy get
-    applied -- the IR carries raw ClrTypeName/Nullability so this is the
+    applied -- the IR carries a raw TypeRef/Nullability so this is the
     first point where a policy choice is actually made.
 
     Emit is a pure data transform: aAssembly in, the .d.ts string + a
@@ -52,7 +52,7 @@ type
     end;
 
     class method EmitType(aSb: StringBuilder; aType: IrTypeLite; aEnumStyle: EnumStyle; aUnknownPolicy: NrtUnknownPolicy; aPad: String;
-                           aUnmapped: Dictionary<String, List<String>>; aUnmappedOrder: List<String>);
+                           aUnmapped: Dictionary<String, List<String>>; aUnmappedOrder: List<String>; aKnownTypes: HashSet<String>);
     begin
       if aType.Kind = IrTypeKindLite.EnumLike then begin
         if aEnumStyle = EnumStyle.Numeric then begin
@@ -73,13 +73,14 @@ type
       else begin
         aSb.AppendLine(aPad + 'export interface ' + aType.Name + ' {');
         for each m in aType.Members do begin
-          var tsType := TypeMapper.MapClrTypeName(m.ClrTypeName);
+          var tsType := TypeMapper.MapTypeRef(m.TypeRef, aKnownTypes);
           if tsType = 'unknown' then begin
-            if not aUnmapped.ContainsKey(m.ClrTypeName) then begin
-              aUnmapped[m.ClrTypeName] := new List<String>;
-              aUnmappedOrder.Add(m.ClrTypeName);
+            var typeDisplayName := m.TypeRef.DisplayName;
+            if not aUnmapped.ContainsKey(typeDisplayName) then begin
+              aUnmapped[typeDisplayName] := new List<String>;
+              aUnmappedOrder.Add(typeDisplayName);
             end;
-            aUnmapped[m.ClrTypeName].Add(aType.Name + '.' + m.Name);
+            aUnmapped[typeDisplayName].Add(aType.Name + '.' + m.Name);
           end;
 
           var opt := '';
@@ -100,8 +101,9 @@ type
       sb.AppendLine();
 
       {
-        Keyed by CLR type name so every member sharing one unmapped type
-        (a common case -- e.g. a custom POCO with no TypeMapper rule used
+        Keyed by the unmapped type's display name (RawTypeRef.DisplayName,
+        e.g. "List<Foo>") so every member sharing one unmapped type (a
+        common case -- e.g. a custom POCO with no TypeMapper rule used
         across many properties) collapses into a single diagnostic instead
         of one per occurrence. aUnmappedOrder preserves first-seen order
         for deterministic output, same rationale as "order" below for
@@ -109,6 +111,23 @@ type
       }
       var unmapped := new Dictionary<String, List<String>>;
       var unmappedOrder := new List<String>;
+
+      {
+        Every type this Emit call will itself output, keyed by its full
+        "Namespace.Name" -- lets TypeMapper.MapTypeRef resolve a member
+        whose type is one of OUR OWN types (docs/DESIGN.md §2.2 chain step
+        "③e. User-defined types") to a reference by name, instead of
+        falling to 'unknown' just because it isn't a recognized BCL
+        primitive. See TypeMapper's own doc comment for why this is always
+        fully namespace-qualified.
+      }
+      var knownTypes := new HashSet<String>;
+      for each t in aAssembly.Types do begin
+        if String.IsNullOrEmpty(t.NamespaceName) then
+          knownTypes.Add(t.Name)
+        else
+          knownTypes.Add(t.NamespaceName + '.' + t.Name);
+      end;
 
       var byNamespace := new Dictionary<String, List<IrTypeLite>>;
       var order := new List<String>;
@@ -132,14 +151,14 @@ type
         end;
 
         for each t in types do
-          EmitType(sb, t, aEnumStyle, aUnknownPolicy, pad, unmapped, unmappedOrder);
+          EmitType(sb, t, aEnumStyle, aUnknownPolicy, pad, unmapped, unmappedOrder, knownTypes);
 
         if hasNs then sb.AppendLine('}');
       end;
 
-      for each clrTypeName in unmappedOrder do begin
-        var locations := unmapped[clrTypeName];
-        var msg := 'no type mapping for ' + clrTypeName + ', emitting "unknown" (' +
+      for each typeDisplayName in unmappedOrder do begin
+        var locations := unmapped[typeDisplayName];
+        var msg := 'no type mapping for ' + typeDisplayName + ', emitting "unknown" (' +
                    locations.Count.ToString() + ' member(s), e.g. ' + locations[0] + ')';
         aDiagnostics.AddWarning(msg);
       end;

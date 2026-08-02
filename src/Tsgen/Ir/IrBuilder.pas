@@ -53,8 +53,8 @@ type
           for each rm in rt.Members do begin
             var im := new IrMemberLite;
             im.Name := rm.Name;
-            im.ClrTypeName := rm.ClrTypeName;
-            im.Nullability := NullabilityProviderChain.Resolve(providers, rt.FullName, rm.Name, rm.ClrTypeName);
+            im.TypeRef := rm.TypeRef;
+            im.Nullability := NullabilityProviderChain.Resolve(providers, rt.FullName, rm.Name, rm.TypeRef);
             it.Members.Add(im);
           end;
         end;

@@ -1007,8 +1007,25 @@ export async function getUserById(
 
 ### 10.2 MVP後・段階的に追加する機能 (優先度順の目安)
 
-1. ジェネリクス (`List<T>`, `Dictionary<K,V>`) の一般化、継承/インターフェース
-2. 循環参照検出 (§3) — 型が増えてくると必要性が高まるため、MVP直後に着手
+1. ~~ジェネリクス (`List<T>`, `Dictionary<K,V>`) の一般化、継承/インターフェース~~
+   **2026-08-02実装済み — `HANDOFF.md` §23参照。** 継承/インターフェースは
+   対応不要だった(`System.Type.GetProperties`が`DeclaredOnly`なしで既に
+   正しく動作することを実機確認)。ジェネリクス: `RawTypeRef`(CLR型参照の
+   構造的表現)+ 再帰的な`TypeMapper.MapTypeRef`により、配列、
+   `List<T>`系 → `T[]`、`Dictionary<K,V>`系 → `Record<K,V>`
+   (string/numberキーのみ)、`Nullable<T>`/`Task<T>`/`ValueTask<T>`の
+   アンラップ、そして(実装途中で見つかった、これまでどんな形でも
+   実装されたことのなかったギャップ)自身が出力する型への参照を
+   `unknown`にフォールバックさせず名前で解決する機能をカバーする。
+2. 循環参照検出 (§3) — 型が増えてくると必要性が高まるため、MVP直後に着手。
+   **項目1の実装と併せてあえて先送り(`HANDOFF.md` §23.1)**:
+   §3.3は既に、`DtsEmitter`にとって循環は基本的に無視してよいと
+   明記している(TSの`interface`/`type`宣言は循環参照をネイティブに
+   許容するため)— 名前付き型のgeneric参照(項目1)は構造的に展開
+   されないため、自己参照/相互参照する型は既にこれなしで動作する
+   (自己参照するフィクスチャで確認済み)。zodの`SchemaEmitter`が
+   実際に構築され、`lazy()`ラップが見た目だけでなく本当に必要に
+   なった時に見直す。
 3. XML Doc → JSDoc、`[Obsolete]` → `@deprecated` (メタデータ層の中でも
    実装コストが低く効果が高いため優先)
 4. `System.Text.Json` 属性による命名変換

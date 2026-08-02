@@ -2145,3 +2145,177 @@ propsのキーから型へのマッピングはreflectionからは100%不可視�
 記録する。ここでは全面的な書き直しはしていない — 次のパスに向けて
 フラグを立てるのみ(`docs/DESIGN.md` §4の改訂が、実際に行われる前に
 追跡されていたのと同様、`HANDOFF.md` §8.3 → §13)。
+
+---
+
+## 23. Generics対応を実装(Windows実機検証、2026-08-02)
+
+`docs/DESIGN.md` §10.2項目1(「genericsの一般化(`List<T>`、
+`Dictionary<K,V>`)、継承/インターフェース」)。このセッション内で
+議論した順序通り、エントリーポイントスキャナ自体(§22)より先に
+着手した: 実際のPage Props DTOはほぼ確実にコレクションを使うため、
+generics対応がない状態でスキャナを先に作ると、それらを描画できない
+出力になってしまう。
+
+### 23.1 コードを書く前に決めたスコープ
+
+ユーザーが事前に確認した分岐点が2つ:
+
+1. **循環参照検出(Tarjan SCC)は先送り、今回はgenericsのみ実装。**
+   `docs/DESIGN.md` §3.3は、`DtsEmitter`にとって循環は基本的に
+   無視してよいと明記している(TSの`interface`/`type`宣言は
+   循環参照をネイティブに許容する)— 主な価値はzod用の
+   `SchemaEmitter`(未構築)と単一ファイル出力の順序(見た目のみ)。
+   どちらもまだ存在しないうちにフルのTarjan SCCを今実装するのは、
+   `CLAUDE.md`が避けるよう言っている過剰な先行実装そのものになる。
+   zodエミッターを実際に構築する時に見直す。
+2. **継承は既に動作しており、実機確認済み、コード変更不要。** プローブ
+   用のクラス階層で、`t.GetProperties(Public|Instance)`
+   (`DeclaredOnly`なし)が、派生型自身のプロパティに加えて基底クラスの
+   プロパティも既に返すことを確認した — これはこのセッションの変更
+   以前から真だった。`docs/DESIGN.md`がgenericsと同じpost-MVP項目に
+   グルーピングしていたからといって、別途実装が必要という意味では
+   なかった。
+
+### 23.2 追加したもの
+
+**`RawTypeRef`**(`src/Tsgen/Loading/RawModel.pas`の新規型): CLR型参照
+の構造的表現 — `FullName`、`IsArray`/`ElementType`、
+`TypeArguments: List<RawTypeRef>` — `System.Type`から再帰的に構築する
+新規`AssemblyLoader.BuildTypeRef`で、`GetElementType()`/
+`GetGenericArguments()`を直接使い、`Type.FullName`の(アセンブリ修飾
+された、mangleされた)generic引数文字列は一切使わない(実機確認済み
+の重要な点: `List<Foo>.FullName`は
+`"System.Collections.Generic.List\`1[[Foo, MyAsm, Version=...]]"`の
+ような形になり、実際のAPIがきれいな要素を直接くれるのに文字列解析
+する価値はない)。`RawMember.ClrTypeName: String` →
+`RawMember.TypeRef: RawTypeRef`に全体で変更 — `IrMemberLite`は
+`RawTypeRef`を直接再利用する(`NullabilityKind`で既に使っているのと
+同じ「再利用し重複させない」パターン)。
+
+**`TypeMapper.MapClrTypeName(String)` →
+`TypeMapper.MapTypeRef(RawTypeRef, HashSet<String>)`**: 新しい構造的
+型に対して再帰的に動作する。処理順序: 配列(要素型への再帰 + `[]`)、
+`Nullable<T>`/`Task<T>`/`ValueTask<T>`(`docs/DESIGN.md` §2.2が名指しで
+挙げる「特殊ケース」— 単一の型引数のマッピングへアンラップする。
+`Nullable<T>`のnullability自体は引き続き`Tsgen.Nrt`側の関心事であり、
+ここで二重に扱うことはない)、`List<T>`/`IList<T>`/`IEnumerable<T>`/
+`ICollection<T>`/`IReadOnlyList<T>`/`IReadOnlyCollection<T>`/
+`HashSet<T>`/`ISet<T>` → `T[]`、`Dictionary<K,V>`/`IDictionary<K,V>`/
+`IReadOnlyDictionary<K,V>` → `K`が`string`/`number`にマップされる場合
+`Record<K, V>`(それ以外は`unknown` — プリミティブでないキーには
+きれいなJSON形状のTS対応物がない)、その後は既存の既知BCLプリミティブ
+のleafマッピング(不変)。
+
+**`INullabilityProvider.TryGetNullability`の`aClrTypeName: String` →
+`aTypeRef: RawTypeRef`**(`Tsgen.Nrt.NullabilityProviders`、`Tsgen.Nrt`
+が`Tsgen.Loading`への一方向依存を新たに持つようになった — 循環なし、
+`Tsgen.Loading`はどちらにも依存していない)。`ValueTypeDefaultProvider`
+は今や`Nullable<T>`(CLRの`FullName = "System.Nullable\`1"`)も
+`T`が何であれ常に`IsNullable`として認識する — Oxygeneの値型に対する
+`nullable Int32`が、Oxygene固有のエンコーディングではなく本当に
+`System.Nullable\`1[[System.Int32]]`にコンパイルされることを実機で
+確認済み。これは単なる配線ではなく実質的な機能向上である: 以前は
+`--source`なしでは*全*メンバーが`Unknown`だったが、今は`Nullable<T>`型
+のメンバーはreflectionのみで正しく解決される — `--source`なしで新規
+フィクスチャを実行して確認済み(§23.3)。
+
+### 23.3 実装途中で見つかったバグ: ユーザー定義型に解決経路が一切なかった
+
+`Generics`フィクスチャ(`List<Node>`メンバーを持つ自己参照型`Node`)を
+構築する過程で、このセッションのgenerics作業より前から存在していた
+が、genericsサポートによって初めて観測可能になった実際のギャップが
+見つかった: `TypeMapper`には「このleaf CLR型はBCLプリミティブでは
+ないが、自分自身が出力する型の1つである」という分岐が**一度も存在
+したことがなかった** — カスタム型(genericですらない単純な型でも)
+のプロパティは、黙って`'unknown'`になっていた。`List<Node>`は
+これを即座に`Node[]`ではなく`unknown[]`として露呈させた。
+
+`DtsEmitter.Emit`が構築する`aKnownTypes: HashSet<String>`(全ての
+`IrTypeLite`の`Namespace.Name`。class-like・enum両方を対象)を追加し、
+`MapTypeRef`に貫通させることで修正した: この集合に含まれるleaf型は、
+`unknown`にフォールバックするのではなく、自身の完全修飾名
+(`Namespace.Name`、例: `Generics.Node`)への参照として解決される。
+常に完全修飾であり、短い裸の名前は使わない — TSの
+`declare namespace A.B`ブロックは、参照箇所がどのnamespaceブロック内
+であってもドット区切りのnamespace参照を受け入れるため、「参照先と
+自分が同じnamespace内にいるか」を追跡しなくても正しく動作する。
+これは`docs/DESIGN.md` §2.2のチェーン手順「③e. ユーザー定義型」の
+縮小版であり、何らかの形で存在するのはこれが初めてである。
+
+名前付き型の参照は決して構造的に展開されない(`Node`自身の
+`List<Node>`メンバーは単に`"Node[]"`と言うだけで、`Node`の形状を
+再びインライン展開したりしない)— `Generics`フィクスチャが実際に
+ビルドされ、無限ループなしに実行されたことで確認した。これが
+§23.1で「`DtsEmitter`にとってTarjan SCCはまだ必要ない」と判断した
+根拠の具体的な検証結果である。
+
+### 23.4 新規フィクスチャ: `tests/fixtures/Generics`
+
+`Tag`(単純な名前付き型)と自己参照する`Node`
+(`Value: not nullable String`、`Children: List<Node>`、
+`Tags: List<Tag>`、`Scores: List<Int32>`、
+`Lookup: Dictionary<String, Int32>`、`MaybeCount: nullable Int32`、
+`Numbers: array of Int32`)。通常の規約通り2ケースをロック
+(`default`、`non-null`): `Generics.Node[]`/`Generics.Tag[]`
+(名前付き型 + 自己参照)、`number[]`(`List<Int32>`要素の
+アンラップ)、`Record<string, number>`(`Dictionary` → `Record`)、
+素の配列に対する`number[]`、そして`MaybeCount: number | null`が
+*両方*のポリシーで`| null`のままである(明示的注釈、ポリシーの
+影響を受けない)一方、無注釈の参照型genericメンバーは正しく
+ポリシーに応じて切り替わることを確認。
+
+**3つ目のケースは実機で確認したがスナップショットスイートには
+ロックしていない**: `--source`を完全に省略し、
+`--nrt-unknown-policy non-null`で実行。全ての参照型generic
+メンバー(`Children`、`Tags`、`Scores`、`Lookup`、`Numbers`)は
+正しく`| null`を失った(sourceなしでは本物の`Unknown`、non-null
+ポリシーが適用される)が、`MaybeCount`は`| null`を*保持*した —
+`ValueTypeDefaultProvider`の新しい`Nullable<T>`検出がreflectionのみで
+動作することの証明である。恒久的な`cases.json`のエントリとして
+追加しなかった理由は、`tools/run-tests.ps1`が全てのケースで無条件に
+`--source <fixtureDir>`を渡す仕様のため(今のところケース単位で
+省略する方法がない)— 今回はこの一つの限定的なシナリオのために
+共有ランナーを拡張する価値があるとは判断しなかった。この発見は
+代わりにここに検証済みの事実として残す。もし`--source`省略が
+恒久的な回帰テストとして必要になれば、まずランナーにケース単位の
+オプトアウトフラグが必要になる。
+
+### 23.5 検証
+
+- `tools/dev-build.ps1`: クリーンビルド(途中で実際の構文エラーを
+  1件踏んで修正した — §23.6参照)。
+- `tools/run-tests.ps1 -UpdateSnapshots`、続けて通常モードの
+  `tools/run-tests.ps1`: 5つのフィクスチャ全体で**12/12ケースが
+  パス**(`Generics`の新規2ケース、既存8ケースは不変)。既存4
+  フィクスチャのスナップショットへの`git diff`: 空 — Loaderから
+  Emitterまで全ステージに及ぶ`RawTypeRef`配線変更による退行なし。
+
+### 23.6 ドキュメントコメント執筆中に踏んだOxygeneの落とし穴(設計上の
+問題ではなく、今後のセッションのための記録)
+
+波かっこを含むTypeScriptコード例(`` `declare namespace A.B { ... }` ``)
+をそのままドキュメントコメントに書いたところ、実際の問題箇所より
+かなり後ろから始まる、紛らわしいパーサエラーの連鎖でビルドが
+壊れた。根本原因: Oxygeneの`{ }`ブロックコメントはネストしない —
+サンプル内の最初の内側の`}`でコメントが早期に閉じてしまい、そこから
+*本当の*次の`}`までの内容がすべて実コードとして解析されてしまった。
+コメントを波かっこを含まない表現に書き直して修正した。覚えておく
+価値がある: このコードベースでは`{ }`コメントの中に波かっこを含む
+コードサンプルを絶対に入れないこと。本当にリテラルなサンプルが
+必要なら、地の文での説明か`//`行コメントを使うこと。
+
+### 23.7 これによって変わらないもの
+
+- 循環参照検出(Tarjan SCC)はあえて未実装のまま(§23.1)— zodの
+  `SchemaEmitter`が実際に構築され、そこで本当に必要になった時に
+  見直す。
+- Provider 2(reflection属性ベースのNRT)、pluginの仕組み、
+  split-file出力、そしてInertia固有のエントリーポイントスキャナ
+  (§22)は、すべて引き続き別途未実装のまま — 本節が扱うのは
+  `docs/DESIGN.md` §10.2項目1のみである。
+- `Task<T>`/`ValueTask<T>`のアンラップは`TypeMapper`に追加した
+  (§23.2、安価であり`docs/DESIGN.md` §2.2で明示的に名指しされて
+  いたため)が、これを実際にテストする、asyncでラップされたメンバー
+  を*生成する*ものはまだ何もない — この特定の分岐に対するフィクスチャ
+  カバレッジはまだない。
