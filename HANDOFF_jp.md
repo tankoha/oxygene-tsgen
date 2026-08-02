@@ -1920,3 +1920,228 @@ NullabilityKind`)、`OxygeneSourceScanProvider`(既存のスキャン結果
 - `AssemblyLoader.pas`、`NullabilityScanner.pas`、Diagnosticsコン
   ポーネントへの変更はなし — 今回は完全にStage 2/4(IRビルダー/
   Emitter)側の変更と、それに付随する新規ユニット1つだけである。
+
+---
+
+## 22. §3.5技術スパイク: エントリーポイント駆動の`Inertia.Render`検出は実現可能か?(Windows実機検証 + Web調査、2026-08-02)
+
+`docs/DESIGN.md` §11項目8が、Inertia.jsピボット(§6)に着手するセッション
+向けに挙げていた「最優先の技術検証項目」を解決。ユーザーは§6を、
+このセッション冒頭で議論した順序(generics/循環参照検出への投資の
+前に、その投資がどんな形になるべきかを決めるエントリーポイント検出の
+不確定要素をまず解消する)通り、まさにこのスパイクから開始することを
+選んだ。手法: InertiaNetCoreの実際のAPI(想定・汎用的な形ではなく)
+をWeb調査で確認した上で、DESIGN.mdの元の記述が未検証のままにしていた
+点をセッションのscratchpad上のOxygene実機プローブ(§14.1/§16.2/
+§18.2/§21と同じ使い捨てプローブの流儀)で検証した。**結論: 実現
+可能 — ただしIL解析でもRoslyn風のフルASTでもない、ソースレベルの
+トークンスキャンによって(`docs/DESIGN.md` §3.5が元々挙げていた
+2つの選択肢のどちらでもない)。ただし、これまで知られていなかった
+Oxygene固有の言語仕様上の落とし穴が1つ見つかり、スキャナが処理すべき
+対象を変えている。**
+
+### 22.1 InertiaNetCoreの実際の`Render` API(Web調査)
+
+`docs/DESIGN.md` §3.5の「`data`引数の静的型を解決する」という
+枠組みは、C#の汎用的な`Inertia.Render(name, new { ... })`のような
+形を想定していた。実際のAPI(`mergehez/InertiaNetCore` —
+`HANDOFF.md` §6.4で既に採用を決めているアダプタ)はもっと狭い:
+
+```csharp
+public static Response Render(string component);
+public static Response Render(string component, InertiaProps? props);
+public static Response Render(string component, Dictionary<string, object?>? props);
+// InertiaProps : Dictionary<string, object?>
+```
+
+**任意のPOCOやanonymous objectを直接受け取るオーバーロードは存在
+しない。** このプロジェクト自身のREADMEにある実際の使用例は全て、
+`InertiaProps`/`Dictionary`をC#のオブジェクト初期化子構文で構築して
+いる: `new InertiaProps { ["Name"] = "InertiaNetCore", ["Version"] =
+... }`。遅延読み込み用のprops値を`Inertia.Defer(async () => ...)`/
+`Inertia.Merge(async () => ...)`でラップするケースも含む。
+
+**帰結: `data`引数の*静的*型は常に`InertiaProps`/`Dictionary<string,
+object?>`であり、単体では何の情報にもならない。** §3.5が本来
+解くべき問題は「1つの式の型を解決すること」ではなく、「propsの
+辞書に追加される文字列キー1つ1つについて、割り当てられる値の式の
+型を決定すること」である。これは設計書が元々提示していたものとは
+狭さも形も異なる問題であり、このスパイクの残りが実際に検証したのは
+こちらである。
+
+### 22.2 Oxygeneのanonymous class: 存在は確認済み、reflectionで見えることも確認済み、ただしここでインラインには使えないことも確認済み
+
+Oxygeneにはanonymous class/record/interfaceリテラルがある:
+`new class(Name := 'Peter', Age := 35)`。実機確認(使い捨てプローブ)
+の結果: コンパイルは通り、`docs/DESIGN.md` §3.5がC#のanonymous
+typeについて挙げていた「ILレベルで不透明」という懸念とは異なり、
+reflectionからは本物の、完全にreflectableな合成ジェネリック型が
+見える: `<>f__AnonymousType0\`2[System.String,System.Int32]`、
+プロパティアクセスも正常に動作した(`a1.Name`は正しく`'Peter'`を
+返した)。C#の`<>f__AnonymousType0`と同じく合成された名前は不安定
+だが、*形状*(プロパティ名+型)は、その特定のインスタンスの`Type`さえ
+手に入れられれば、reflectionから本当に取得可能である — 実務上の
+ボトルネックは「*このソース位置*のanonymousリテラル」と「*その*
+reflectされた型」をどう対応付けるかであって、anonymous typeが
+一般にreflectableかどうかではない。§22.1の発見により`InertiaProps`
+の値はキーごとに1つずつ追加されるので、インラインの`new class(...)`
+が1つのpropsの*値*として現れることは依然としてありうる(例:
+`props['Meta'] := new class(Total := 10, Page := 1);`)— これは
+他の値の式と同じ扱いになる(§22.4)。reflectionではなくソース
+レベルでの解析による。
+
+### 22.3 新規発見: Oxygeneにはオブジェクト/コレクション初期化子構文が存在せず、それっぽく見える構文は黙って無効化される
+
+DESIGN.mdにもHANDOFF.mdにもこれまで指摘がなかった点。
+InertiaNetCore自身のC#のREADME例を模して、`Dictionary<String,
+Object>`を埋めるための候補構文を3つ、実機で検証した:
+
+1. `new Dictionary<String, Object> { ['Name'] := 'Foo', ['Age'] := 30 }`
+   — **コンパイルは正常に通るが、実際には何もしない。** `{ }`は
+   Oxygeneのブロックコメントの区切り文字(NRTスキャナ作業で既知 —
+   `HANDOFF.md` §16.3のコメント漏れテストケース参照)であり、
+   `{ ['Name'] := 'Foo', ['Age'] := 30 }`ブロック全体が1つの
+   コメントフラグメントとしてトークナイズされ、破棄される。残るのは
+   `new Dictionary<String, Object>` — 空の辞書 — という実際の式のみ。
+   **トークンを調べただけでなく、実行時に確認済み**: このまさに
+   その行の後で`d1.Count`は`0`と表示された。InertiaNetCore自身の
+   公式なC#スタイルの例をそのままOxygeneに移植しようとした人にとって、
+   これは本物の、無言の失敗の罠である — コンパイラの警告もエラーも
+   なく、本番環境でPage Propsが黙って空になるだけである。
+2. `new Dictionary<String, Object>(['Name'] := 'Foo', ['Age'] := 30)`
+   (波かっこの代わりに丸かっこ) — 実コンパイルエラー: `comma (,) or
+   close parenthesis expected, got assignment (:=)`。
+3. `new Dictionary<String, Object>(('Name', 'Foo'), ('Age', 30))`
+   (タプルペアのAdd形式) — 実コンパイルエラー: 一致するコンストラクタ
+   オーバーロードがない(タプルリテラルは`capacity`/`comparer`ペアに
+   強制変換されない)。
+
+**結論: Oxygeneで`InertiaProps`/`Dictionary`を埋める唯一の方法は、
+構築後の連続したインデクサ代入文である**(`var props := new
+InertiaProps; props['User'] := aUser; props['IsAdmin'] := true;`)—
+実際に動作する唯一のパターンであり(§22.1の通り)、他に意味のある
+ものにコンパイルされるインライン代替が存在しない以上、実際の
+Oxygene Inertiaコードが使いうる唯一のパターンでもあると確認した。
+
+**このプロジェクトとは別にRemObjectsへ報告する価値がある**(まだ
+していない — `HANDOFF.md` §17の`deps.json`バグと同様、ユーザーの
+判断に委ねる): もっともらしいオブジェクト初期化子に見える波かっこの
+ブロックが、動作するかエラーになるかのどちらでもなく黙ってコメント
+扱いのno-opにコンパイルされてしまうのは、これまでRemObjectsが
+反応してくれた種類の問題と一致する鋭い落とし穴である。
+
+### 22.4 検出の実現可能性、`TokenStream`による実機確認
+
+§22.3により実際のコードは*常に*連続文パターンになると分かったので、
+以下の現実的なプローブメソッドを`RemObjects.Elements.Code.
+TokenStream`(`NullabilityScanner`と同じツール、同じ手法、§16)で
+トークナイズし、生のトークン列を確認した:
+
+```pascal
+method Profile(aUser: UserDto): InertiaResponse;
+begin
+  var props := new InertiaProps;
+  props['User'] := aUser;
+  props['IsAdmin'] := true;
+  result := Inertia.Render('pages/Profile', props);
+end;
+```
+
+トークン列は曖昧さがなく、綺麗に構造化されている — `method Profile
+( aUser : UserDto )`からパラメータの宣言型が、`var props := new
+InertiaProps`からローカル変数の型が得られ、`props [ '<key>' ] :=
+<value> ;`はそれぞれ平坦で区切りやすい文であり、呼び出し箇所自体は
+`Inertia . Render ( '<component>' , props ) ;`である。これは
+`NullabilityScanner`が既に解決している問題と機構的に同じクラスの
+もの(丸かっこ/角かっこの深さを追跡するトークン走査。§18.2の
+indexerスキップロジックは、ここでのインデクサ代入検出が必要とする
+ものと構造的に同じ形をしている)— **IL解析もRoslyn風のフルASTも
+不要**であり、`docs/DESIGN.md` §3.5が挙げていた「どちらの手法も
+プロトタイプされていない」というギャップを解消する。第3の選択肢 —
+既に実証済みの`NullabilityScanner`基盤を拡張したソースレベルの
+トークンスキャン — が答えであり、Oxygeneのコンパイラが標準的な
+メタデータを通じて公開していないものについては、IL/reflectionより
+ソースレベル解析を優先するというこのプロジェクト自身の既存の傾向
+(§2.9、§8.3)と一致する。
+
+### 22.5 Reflectionの役割: propsの形状自体には無力、名前付き型が解決された後は既存機構をそのまま再利用可能
+
+メタデータのみのreflection(`MetadataLoadContext`、このツールの
+Loader設計全体)はメソッドの*本体*を一切見ることができない —
+propsのキーから型へのマッピングはreflectionからは100%不可視であり、
+これはreflectionの問題ではなく純粋にソースレベルの問題であることを
+裏付ける(NRTについて既に得ていた結論(`HANDOFF.md` §8.3)の、
+より鋭いバージョンである)。しかし、ソーススキャンによって値の式が
+*名前付き*型への参照(パラメータ/ローカル変数の宣言型、または
+`new NamedType(...)`式)に解決された時点で、**既存の**
+`AssemblyLoader`/`IrBuilder`のreflectionパイプラインが、新規コード
+一切なしにその型自身のメンバー形状を処理してくれる — `docs/DESIGN.md`
+§3.5自身の図(ステップ③「その型のメンバーを推移的に辿る。§3.2の
+辺収集ロジックを再利用」)と一致する綺麗な役割分担である。インライン
+の`new class(...)`によるanonymousリテラルの値(§22.2)は、この
+引き継ぎの後でも完全にソースレベルのままとなる唯一のケースである
+— その形状は、結果として得られる`<>f__AnonymousTypeN`をreflectする
+のではなく、リテラル自身の`Name := expr`ペアを解析することから
+得なければならない。
+
+### 22.6 スコープの正直な評価: NRTのスキャナより大きい
+
+実現可能であることは確認できたが、安いとは確認していない。v1の
+エントリーポイントスキャナが、`NullabilityScanner`が既に行っている
+こと以外に必要とするもの:
+
+- メソッド単位のローカル変数の型追跡(パラメータの宣言型 +
+  `var x := new T`のローカル宣言)— `NullabilityScanner`は今のところ
+  「メソッド本体のローカル状態」という概念を一切持たず、型/メンバー
+  レベルの宣言のみを扱う。
+- `identifier['key'] := expr;`という文を、追跡している変数へ
+  対応付けること。
+- あえて小さく絞った式の形に対する型推論: リテラル、単純な識別子
+  (追跡している宣言型を引く)、`new NamedType(...)`、そして
+  `new class(...)`(自身のペアへ再帰する)。
+
+**v1では意図的にスコープ外とする**(未解決の各キーごとに手作りの
+式評価器を書くのではなく、`Tsgen.Diagnostics`の警告付きで`unknown`
+にフォールバックするか、解決不能な部分が多すぎる場合はページ全体を
+`docs/DESIGN.md` §3.5の明示的アノテーションの逃げ道にフォール
+バックする): 条件分岐/ブランチ依存のキー設定、ヘルパーメソッド
+呼び出し経由で設定されるキー、`Inertia.Defer(...)`/`Inertia.Merge
+(...)`でラップされた値(実際の型はasyncラムダの戻り値の型 —
+着手するなら、それ自体もう1つの小さなスパイクが必要)、動的に
+計算される文字列キー、そして`Render`が実際に呼ばれるのとは別の
+メソッド/クラスで構築されるpropsオブジェクト。
+
+### 22.7 推奨
+
+**エントリーポイント駆動の自動検出は技術的に実現可能であり、主軸の
+仕組みとすべきである** — `docs/DESIGN.md` §3.5のフォールバック
+(型ごとの明示的アノテーション)ではなく。実際のOxygeneコードが
+とにかく生成しうる唯一のパターンと確認済みの、同一メソッド内での
+連続したインデクサ代入パターンにスコープを絞る(§22.3)。上記の
+明示的にスコープ外としたケースについて`unknown`/診断警告に
+フォールバックする(controllerの何か1つでも認識できない箇所が
+あった瞬間に完全な手動アノテーションを要求するのではなく)ことで、
+よくあるケースでは「自動で、手動アノテーション不要」という価値を
+保ちつつ、稀なケースでは破局的にではなく段階的に劣化させられる。
+
+まだ行っていない、これに着手するセッションに残す作業: 実際の
+スキャナの実装(`Tsgen.Nrt`隣接、または新規の`Tsgen.Inertia`的な
+ユニット)、確認済みの連続パターンと明示的にスコープ外としたケース
+(unknown+警告へ段階的に劣化することをロックインするため。クラッシュ
+したり誤検出したりしないことを確認するため)の両方をカバーする
+フィクスチャの構築、そして — §6.2でまだ開いたままの項目として —
+`Inertia.Defer`/`Inertia.Merge`ラッパーケースを最終的にどう扱うかの
+決定。
+
+### 22.8 `docs/DESIGN.md`への影響
+
+§3.5には改訂パスが必要: 「(a) IL解析 / (b) Roslyn構文木解析、
+どちらもプロトタイプされていない」という枠組みを、このスパイクの
+答え(`NullabilityScanner`の実証済みアプローチを拡張したソース
+レベルの`TokenStream`スキャン)に置き換える。§22.1の
+`InertiaProps`/`Dictionary`限定というAPI形状(任意のPOCOを受け取る
+オーバーロードはない)を記載する。そして§22.3のOxygeneオブジェクト
+初期化子の落とし穴を、検出設計が前提とする、成否を左右する事実として
+記録する。ここでは全面的な書き直しはしていない — 次のパスに向けて
+フラグを立てるのみ(`docs/DESIGN.md` §4の改訂が、実際に行われる前に
+追跡されていたのと同様、`HANDOFF.md` §8.3 → §13)。

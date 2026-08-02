@@ -1982,3 +1982,223 @@ explicitly `nullable` (unaffected by Provider 3), and
 - No changes to `AssemblyLoader.pas`, `NullabilityScanner.pas`, or the
   Diagnostics component — this was entirely a Stage 2/4 (IR builder /
   emitter) change plus one new Stage-2-adjacent unit.
+
+---
+
+## 22. §3.5 technical spike: is entry-point-driven `Inertia.Render` detection viable? (Windows hands-on + web research, 2026-08-02)
+
+Resolves the "top-priority technical validation item" `docs/DESIGN.md`
+§11 item 8 flagged for whichever session picks up the Inertia.js pivot
+(§6). User chose to start §6 with exactly this spike, per the ordering
+discussed earlier this session (resolve the entry-point-detection unknown
+before investing in generics/cycle-detection, since the unknown
+determines what shape that investment needs to take). Method: real web
+research into InertiaNetCore's actual API (not the assumed/generic
+shape), then hands-on Oxygene probes in the session scratchpad (same
+disposable-probe convention as §14.1/§16.2/§18.2/§21) to test what
+DESIGN.md's original write-up left untested. **Conclusion: yes, viable —
+via source-level token scanning, not IL analysis and not a Roslyn-style
+full AST (neither of DESIGN.md §3.5's original two options) — but a
+significant, previously-unknown Oxygene-specific language gotcha changes
+what the scanner needs to handle.**
+
+### 22.1 InertiaNetCore's actual `Render` API (web research)
+
+`docs/DESIGN.md` §3.5's framing ("resolve the static type of the `data`
+argument") assumed a shape like C#'s generic `Inertia.Render(name, new {
+...})`. The actual API (`mergehez/InertiaNetCore`, the adapter
+`HANDOFF.md` §6.4 already committed to) is narrower:
+
+```csharp
+public static Response Render(string component);
+public static Response Render(string component, InertiaProps? props);
+public static Response Render(string component, Dictionary<string, object?>? props);
+// InertiaProps : Dictionary<string, object?>
+```
+
+**There is no overload accepting an arbitrary POCO or anonymous object
+directly.** Every real usage example in the project's own README
+constructs `InertiaProps`/`Dictionary` via C# object-initializer syntax:
+`new InertiaProps { ["Name"] = "InertiaNetCore", ["Version"] = ... }`,
+including `Inertia.Defer(async () => ...)`/`Inertia.Merge(async () =>
+...)`-wrapped values for lazy-loaded props.
+
+**Consequence: the `data` argument's *static* type is always
+`InertiaProps`/`Dictionary<string, object?>` — never informative on its
+own.** The real problem §3.5 needs to solve isn't "resolve one
+expression's type," it's "for each string key added to the props
+dictionary, determine the type of the value expression assigned to it."
+This is a narrower, differently-shaped problem than the design doc
+originally posed, and it's the one the rest of this spike actually
+investigates.
+
+### 22.2 Oxygene anonymous classes: confirmed to exist, confirmed reflectable, confirmed *not* usable inline here
+
+Oxygene has anonymous class/record/interface literals: `new
+class(Name := 'Peter', Age := 35)`. Verified hands-on (disposable probe):
+compiles, and — unlike the concern `docs/DESIGN.md` §3.5 raised about C#
+anonymous types being IL-opaque — reflection sees a real, fully
+reflectable synthesized generic type:
+`<>f__AnonymousType0\`2[System.String,System.Int32]`, with working
+property access (`a1.Name` correctly returned `'Peter'`). Same
+synthesized-name-instability as C#'s `<>f__AnonymousType0`, but the
+*shape* (property names + types) is genuinely recoverable via reflection
+if you can get your hands on a specific instance's `Type` — the practical
+blocker is correlating "the anonymous literal at *this* source location"
+to "*that* reflected type," not the reflectability of anonymous types in
+general. Given §22.1's finding that `InertiaProps` values are added one
+key at a time, an inline `new class(...)` could still appear as a single
+prop's *value* (e.g. `props['Meta'] := new class(Total := 10, Page :=
+1);`) — handled the same way as any other value expression (§22.4), via
+source-level parsing, not reflection.
+
+### 22.3 New finding: Oxygene has no object/collection-initializer syntax, and the closest-looking syntax silently no-ops
+
+Not something either DESIGN.md or HANDOFF.md previously flagged.
+Verified hands-on with three candidate syntaxes for populating a
+`Dictionary<String, Object>`, mirroring InertiaNetCore's own C# README
+examples:
+
+1. `new Dictionary<String, Object> { ['Name'] := 'Foo', ['Age'] := 30 }`
+   — **compiles cleanly, but silently does nothing.** `{ }` is Oxygene's
+   block-comment delimiter (already known from NRT scanner work,
+   `HANDOFF.md` §16.3's comment-leak test cases) — the entire
+   `{ ['Name'] := 'Foo', ['Age'] := 30 }` block tokenizes as a single
+   comment fragment and is discarded, leaving `new Dictionary<String,
+   Object>` — an empty dictionary — as the actual expression. **Confirmed
+   at runtime, not just by inspecting tokens**: `d1.Count` printed `0`
+   after this exact line. This is a genuine, silent-failure language trap
+   for anyone porting InertiaNetCore's own official C#-style examples
+   into Oxygene verbatim — no compiler warning, no error, just silently
+   empty Page Props in production.
+2. `new Dictionary<String, Object>(['Name'] := 'Foo', ['Age'] := 30)`
+   (parens instead of braces) — hard compile error: `comma (,) or close
+   parenthesis expected, got assignment (:=)`.
+3. `new Dictionary<String, Object>(('Name', 'Foo'), ('Age', 30))`
+   (tuple-pair Add-style) — hard compile error: no matching constructor
+   overload (tuple literals aren't coerced to a `capacity`/`comparer`
+   pair).
+
+**Conclusion: the only way to populate an `InertiaProps`/`Dictionary` in
+Oxygene is sequential indexer-assignment statements after construction**
+(`var props := new InertiaProps; props['User'] := aUser; props['IsAdmin']
+:= true;`) — confirmed as the only pattern that actually works, and (per
+§22.1) the only pattern real Oxygene Inertia code can use at all, since
+no inline-literal alternative compiles to anything meaningful.
+
+**Worth reporting to RemObjects independently of this project** (not done
+yet — flagging for the user to decide, same as the `deps.json` bug in
+`HANDOFF.md` §17): a curly-brace block that looks exactly like a
+plausible object-initializer silently compiling to a no-op comment,
+rather than either working or erroring, is a sharp footgun matching the
+kind of issue RemObjects has been responsive to before.
+
+### 22.4 Detection feasibility, confirmed hands-on via `TokenStream`
+
+Because §22.3 established that real code is *always* the
+sequential-statement pattern, tokenized the realistic probe method below
+through `RemObjects.Elements.Code.TokenStream` (same tool, same technique
+as `NullabilityScanner`, §16) and inspected the raw token list:
+
+```pascal
+method Profile(aUser: UserDto): InertiaResponse;
+begin
+  var props := new InertiaProps;
+  props['User'] := aUser;
+  props['IsAdmin'] := true;
+  result := Inertia.Render('pages/Profile', props);
+end;
+```
+
+The token stream is unambiguous and cleanly structured — `method Profile
+( aUser : UserDto )` gives the parameter's declared type; `var props :=
+new InertiaProps` gives the local variable's type; each `props [
+'<key>' ] := <value> ;` is a flat, easily-delimited statement; the call
+site itself is `Inertia . Render ( '<component>' , props ) ;`. This is
+mechanically the same class of problem `NullabilityScanner` already
+solves (paren/bracket-depth-tracked token walking, §18.2's indexer-skip
+logic is structurally the same shape as what indexer-assignment detection
+here needs) — **no IL analysis and no Roslyn-style full AST required**,
+resolving the "neither approach has been prototyped" gap `docs/DESIGN.md`
+§3.5 flagged. A third option — source-level token scanning, extending the
+already-proven `NullabilityScanner` infrastructure — is the answer,
+matching the project's own established bias (§2.9, §8.3) toward
+source-level analysis over IL/reflection for anything Oxygene's compiler
+doesn't expose through standard metadata.
+
+### 22.5 Reflection's role: none for the props shape itself, full reuse once a named type is resolved
+
+Metadata-only reflection (`MetadataLoadContext`, this tool's whole Loader
+design) cannot see method *bodies* at all — the props-key-to-type mapping
+is 100% invisible to it, confirming this is purely a source-level
+problem, not a reflection one (a sharper version of the same conclusion
+already reached for NRT, `HANDOFF.md` §8.3). But once source scanning
+resolves a value expression to a reference to a *named* type (a
+parameter/local variable's declared type, or a `new NamedType(...)`
+expression), the **existing** `AssemblyLoader`/`IrBuilder` reflection
+pipeline handles that type's own member shape with zero new code needed —
+clean division of labor matching `docs/DESIGN.md` §3.5's own diagram
+(step ③, "walk that type's members transitively, reusing the
+edge-collection logic of §3.2"). Inline `new class(...)` anonymous-literal
+values (§22.2) are the one case that stays fully source-level even after
+this handoff — their shape must come from parsing the literal's own
+`Name := expr` pairs, not from reflecting the resulting
+`<>f__AnonymousTypeN`.
+
+### 22.6 Honest scope assessment: this is a bigger scanner than NRT's
+
+Confirmed feasible, not confirmed cheap. What a v1 entry-point scanner
+needs, beyond what `NullabilityScanner` already does:
+
+- Per-method local-variable type tracking (parameter declared types +
+  `var x := new T` local declarations) — `NullabilityScanner` has no
+  notion of "method body local state" today, only type/member-level
+  declarations.
+- Correlating `identifier['key'] := expr;` statements back to a tracked
+  variable.
+- Expression-type inference for a deliberately small set of shapes:
+  literals, a plain identifier (look up its tracked declared type), `new
+  NamedType(...)`, and `new class(...)` (recurse into its own pairs).
+
+**Deliberately out of scope for v1** (fall back to `unknown` + a
+`Tsgen.Diagnostics` warning per unresolved key, or to `docs/DESIGN.md`
+§3.5's explicit-annotation escape hatch for the whole page if too much is
+unresolvable, rather than a hand-rolled expression evaluator): conditional
+/branch-dependent key-setting, keys set via a helper-method call, values
+wrapped in `Inertia.Defer(...)`/`Inertia.Merge(...)` (the real type is an
+async lambda's return type — a second, smaller spike of its own if
+pursued), dynamically-computed string keys, and a props object built in a
+different method/class than where `Render` is actually called.
+
+### 22.7 Recommendation
+
+**Entry-point-driven auto-discovery is technically viable and should be
+the primary mechanism**, not the `docs/DESIGN.md` §3.5 fallback
+(explicit per-type annotation) — scoped to the sequential
+indexer-assignment-in-the-same-method pattern established as the only
+pattern real Oxygene code can produce anyway (§22.3). Falling back to
+`unknown`/a diagnostic warning for the explicitly-out-of-scope cases
+above (rather than requiring full manual annotation the moment *anything*
+in a controller is unrecognized) keeps the "automatic, no manual
+annotation" value proposition for the common case while degrading
+gracefully, not catastrophically, for the uncommon one.
+
+Not yet done, left for whichever session implements this: writing the
+actual scanner (`Tsgen.Nrt`-adjacent or a new `Tsgen.Inertia`-ish unit),
+building fixtures covering the confirmed-working sequential pattern plus
+the explicitly-out-of-scope cases (to lock in that they degrade to
+`unknown`+warning rather than crash or silently mis-detect), and — per
+§6.2's still-open item — deciding how the `Inertia.Defer`/`Inertia.Merge`
+wrapper case should eventually be handled.
+
+### 22.8 Impact on `docs/DESIGN.md`
+
+§3.5 needs a revision pass to: replace the "(a) IL analysis / (b)
+Roslyn-syntax-tree analysis, neither prototyped" framing with this
+spike's answer (source-level `TokenStream` scanning, extending
+`NullabilityScanner`'s proven approach); note the `InertiaProps`/
+`Dictionary`-only API shape from §22.1 (no arbitrary-POCO overload);
+and record the Oxygene object-initializer gotcha from §22.3 as a
+load-bearing fact the detection design depends on. Not rewritten in full
+here — flagged for the next pass, same as `docs/DESIGN.md` §4's revision
+was tracked before it was actually done (`HANDOFF.md` §8.3 → §13).

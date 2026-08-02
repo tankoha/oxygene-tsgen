@@ -360,6 +360,14 @@ flowchart TD
 
 ### 3.5 Entry-Point-Driven Type Discovery (Inertia Mode)
 
+> **Revision note (2026-08-02):** the technical-risk framing below was
+> written before any hands-on verification, when it was unknown whether
+> entry-point-driven detection was even viable. A spike (`HANDOFF.md`
+> §22) has since resolved this: **yes, viable, via source-level token
+> scanning** — a third option this section's original (a)/(b) split
+> didn't consider. See §22 for the full investigation; the summary below
+> replaces the old "neither approach has been prototyped" framing.
+
 **Problem statement**: §3.1–3.4 above assume the existing model — scan the whole
 assembly, build `IrAssembly.AllTypes` from everything, then find cycles among all
 of them. That premise no longer fits the Inertia.js use case well: a typical
@@ -374,45 +382,78 @@ an `Inertia.Render` call site*:
 
 ```mermaid
 flowchart TD
-    A["① Scan controller method bodies for<br/>Inertia.Render call sites"] --> B["② For each call site, resolve the<br/>static type of the 'data' argument"]
-    B --> C["③ Walk that type's members transitively,<br/>reusing the edge-collection logic of §3.2 step ①"]
+    A["① Scan controller method bodies for<br/>Inertia.Render call sites"] --> B["② For each props key set on the call's<br/>InertiaProps/Dictionary argument, resolve<br/>the value expression's static type"]
+    B --> C["③ Walk each resolved named type's members<br/>transitively, reusing the edge-collection<br/>logic of §3.2 step ①"]
     C --> D["④ Union of reachable types becomes<br/>IrAssembly.AllTypes for this mode"]
     D --> E["Stages 2-5 proceed unchanged from here<br/>(SCC/topo-sort, type mapping, emission)"]
 ```
 
 This reuses the same graph-walking machinery already built for cycle detection
-(§3.2 step ①, edge collection) — the only new piece is steps ①/②: *finding the
-call sites and resolving the argument's static type in the first place*, which
-requires inspecting method bodies rather than just type/member signatures.
+(§3.2 step ①, edge collection) — the new piece is steps ①/②: *finding the call
+sites and resolving each props key's value type*, which requires inspecting
+method bodies rather than just type/member signatures.
 
-**Why this is a new, unverified technical risk (do not treat as solved)**:
-everything else in this design document reads *type-level* .NET metadata
-(`System.Reflection`-style: types, members, attributes), which is comparatively
-well-trodden ground. Finding `Inertia.Render(...)` call sites and determining the
-static type of an expression passed as an argument requires either:
+**What the actual InertiaNetCore API looks like (`HANDOFF.md` §22.1,
+resolving this section's original assumption)**: there is no
+`Render(component, arbitraryPoco)` overload. The real signatures are
+`Render(string)`, `Render(string, InertiaProps?)`, and `Render(string,
+Dictionary<string, object?>? )`, where `InertiaProps : Dictionary<string,
+object?>`. The `data` argument's *static* type is therefore always
+`InertiaProps`/`Dictionary` — never informative on its own. Step ② is
+correspondingly not "resolve one expression's type," it's "for each
+string key added to the props dictionary, resolve the type of the value
+expression assigned to it."
 
-- (a) IL-level analysis of method bodies — walking `call`/`callvirt`/`newobj`
-  opcodes and tracking the operand stack to reconstruct the argument's shape. This
-  is non-trivial, particularly for anonymous types, which the C# compiler lowers
-  to synthesized `<>f__AnonymousType0`-style classes with no source-level name; or
-- (b) a Roslyn-syntax-tree-level analysis instead of, or in addition to, this
-  tool's reflection-only design premise — which would be a significant
-  architectural addition, arguably in tension with the "metadata only, no source
-  parsing" framing in §0.1/§1.
+**How step ①/② are actually resolved — source-level token scanning, not
+IL or Roslyn-style analysis (`HANDOFF.md` §22.2–§22.6)**: a real,
+previously-unknown Oxygene-specific fact makes this tractable —
+**Oxygene has no object/collection-initializer syntax**. The
+curly-brace form that looks like it should work
+(`new InertiaProps { ['Key'] := value }`) silently compiles to a no-op
+(the braces are consumed as Oxygene's block-comment delimiter, leaving
+an empty dictionary — confirmed at runtime, not just by inspecting
+tokens), and the parenthesized forms are hard compile errors. **The only
+syntax that works is sequential indexer-assignment after construction**
+(`var props := new InertiaProps; props['Key'] := value; ...`), which
+means real Oxygene code can only ever produce this one shape — fully
+visible in source, no inline-literal alternative to also handle. This
+shape tokenizes cleanly through `RemObjects.Elements.Code.TokenStream`
+(the same tokenizer `NullabilityScanner` already uses, §16) and is
+mechanically the same class of problem `NullabilityScanner`'s
+paren/bracket-depth-tracked token walking already solves (§18.2's
+indexer-skip logic is structurally the same shape needed here) — neither
+of this section's original (a) IL-analysis or (b) Roslyn-syntax-tree
+options is needed.
 
-Neither approach has been prototyped. This is flagged as a top-priority technical
-validation item for whichever session picks up Phase 2 work on the Inertia pivot
-(see `HANDOFF.md` §6.3, and the corresponding open-question entry in §11).
+**What resolving a props value's type actually requires (`HANDOFF.md`
+§22.5–§22.6)**: per-method local-variable type tracking (parameter
+declared types + `var x := new T` locals) that `NullabilityScanner` has
+no notion of today, plus type inference for a deliberately small set of
+value-expression shapes (literals, a plain identifier's tracked declared
+type, `new NamedType(...)`, and Oxygene's `new class(...)` anonymous
+literal — confirmed to compile to a real, reflectable synthesized
+generic type like C#'s `<>f__AnonymousType0`, but only usable here via
+parsing its own source-level property pairs, not reflection). Reflection
+plays no role in resolving the props-key-to-type mapping itself (method
+bodies are invisible to metadata-only loading) — but once a value
+resolves to a *named* type, the existing `AssemblyLoader`/`IrBuilder`
+reflection pipeline (step ③ above) handles that type's shape with zero
+new code, exactly as this diagram already assumed. Deliberately
+out of scope for a v1 scanner: conditional/branch-dependent key-setting,
+keys set via a helper-method call, `Inertia.Defer(...)`/`Inertia.Merge(...)`
+-wrapped values (the real type is an async lambda's return type), dynamic
+keys, and props built in a different method/class than where `Render` is
+called — these should degrade to `unknown` + a diagnostic warning per
+unresolved key, not block generation for the whole page.
 
-**Fallback if entry-point analysis proves infeasible**: the whole-assembly scan
-mode (§3.1–3.4, unchanged) remains available as a fallback — the user could
-instead be asked to explicitly mark which POCOs back an Inertia page (e.g. via a
-marker attribute, or an explicit config list of component-name → type-FQN pairs)
-rather than having the tool auto-discover them from call sites. This sacrifices
-the "automatic, no manual annotation" convenience that is the main draw of
-entry-point discovery, but keeps the rest of the pipeline (§2–§10) working
-unmodified. Which of the two (auto-discovery vs. explicit annotation) becomes the
-actual MVP path is left open pending the technical validation above.
+**Fallback, now scoped to the harder cases only (not the whole feature)**:
+the whole-assembly scan mode (§3.1–3.4, unchanged) and/or explicit
+per-type annotation remain available for the out-of-scope cases above, or
+for users who prefer not to rely on auto-detection at all — but per
+`HANDOFF.md` §22.7's recommendation, entry-point-driven auto-discovery
+should be the *primary* mechanism, not a fallback-of-last-resort, since
+the confirmed-working sequential-assignment pattern is realistically the
+only one real Oxygene Inertia code can produce.
 
 ---
 
