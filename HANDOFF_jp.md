@@ -1369,3 +1369,143 @@ RemObjects側で同じ担当者が処理するとは限らないためである�
    大部分は解消される — Marcから返信があった時点で、デフォルトで
    重要度「高」の未解決項目として引き継ぎ続けるのではなく、改めて
    見直す価値がある。
+
+**このセッション開始時点(2026-08-02、同日後半)の状況:** 作業を
+続ける前に両方の受信箱を確認したが、RemObjectsからの返信はまだ
+どちらの件についてもない。ユーザーによれば、§9/§17の最初の返信は
+米国時間の金曜日、時間外に対応してくれたCEO本人からのものだった
+とのことで、週末は追撃せずそのまま待つ方針とした。ベンダー確認待ち
+の2件はコード面では動きがない状態のまま — このセッションで代わりに
+何を行ったかは§18(NRTスキャナのハードニング、コードのみで完結、
+ベンダー依存なし)を参照。
+
+---
+
+## 18. NRTスキャナのハードニング: indexerプロパティを修正、複数型/typeセクションを検証、nested typesは対象外に(Windows実機検証、2026-08-02)
+
+`HANDOFF.md`の§12.6/§16.4で挙げていた既知の限界リスト(nested types、
+1つの`type`セクション内の複数型、indexer形式のプロパティパラメータ
+リスト)への対応。§15のスナップショットテストの安全網ができたことで、
+この種のスキャナ変更に着手しやすくなった(§16.4自身がそう推奨して
+いた)。ユーザーは他の候補(ベンダーフォローアップ、
+`INullabilityProvider`チェーン/`mark-unknown`ポリシー、
+`docs/DESIGN.md` §10.2の次のpost-MVP項目)よりもこちらを選んだ。
+
+### 18.1 修正に着手する前に見つかったスコープの誤認
+
+スキャナを触る前に、`AssemblyLoader.pas`と`DtsEmitter.pas`がnested
+typesを実際どう扱っているかを確認した — スキャナ自身のコメント
+(自分自身を「犯人」扱いしていた)を鵜呑みにせずに。**`AssemblyLoader.
+Load`は`t.IsNested`な型を`RawAssembly`に届く前にすべて除外している**
+(`AssemblyLoader.pas:26`、§13の「非public/nested/generic/未対応種別の
+型をスキップ」警告の一部)。そして**`DtsEmitter`にはネストした
+`interface`をinterface内に出力する仕組みがそもそも存在しない**
+(namespaceレベルの入れ子(`declare namespace { ... }`)のみ)。結論:
+`NullabilityScanner`のnested type属性付けだけを直しても、生成物には
+一切反映されない — nested typeのメンバーはスキャナが何というキーで
+属性を付けようと、そもそもIRにもEmitterにも届かないからである。
+本当にnested typesに対応するには、Loader・IRのキー形式・Emitterの
+3段階すべてに手を入れる必要があり、スキャナだけのパッチでは済まない。
+
+**ユーザー判断(2026-08-02): 今回はnested typesを対象外とする。**
+`NullabilityScanner.pas`のヘッダーコメントは、古い「ハードニングすべき」
+という文言をそのまま引きずるのではなく、この事実(なぜ今は意味が
+ないのか、単に未対応というだけでなく)を記録するよう更新した。
+nested typesへの対応は、`AssemblyLoader.pas` +
+`IrBuilder.pas`/`IrModel.pas`(nested typeのキー形式 —
+CLRの`Type.FullName`は`Outer+Inner`を使う) +
+`DtsEmitter.pas`(ネストした`interface`の出力)にまたがる、将来の
+別タスクとして扱うこと。スキャナだけで少しずつ対応しようとしない。
+
+### 18.2 indexer形式のプロパティ: 実バグを修正
+
+`NullabilityScanner.ScanFile`の`TOK_PROPERTY`分岐は、プロパティ名の
+直後のトークンが`TOK_COLON`であることを前提にしていた
+(`property Name: Type ...`)。indexer宣言
+(`property Item[aIndex: Int32]: not nullable String read ... write ...;`)
+では、そこに`TOK_OPENBLOCK`(`[`)が来るため、分岐全体の条件が
+成立せず、indexerプロパティは元のソースの内容にかかわらず常に
+`Unknown`扱いのまま、無言で検出漏れとなっていた。`AssemblyLoader`は
+`t.GetProperties(...)`経由でindexerプロパティ自体は問題なく読み込んで
+いる(reflectionの`PropertyInfo.Name`は`"Item"`となり、indexパラメータ
+は無視される)ので、これは純粋にスキャナ側の穴であり、Loader側の
+問題ではなかった。
+
+修正: プロパティ名の直後のトークンが`TOK_OPENBLOCK`だった場合、
+ブラケットの深さを追跡しながら対応する`TOK_CLOSEBLOCK`まで読み飛ばし、
+そこから改めて`TOK_COLON`を探すようにした — メソッドのパラメータ
+リストを除外するために既にある`parenDepth`の丸括弧スキップと同じ形を、
+`(...)`ではなく`[...]`向けに適用しただけである。`Token.T_OpenBlock`/
+`Token.T_CloseBlock`が`[`/`]`に対応する正しい定数であることは、
+使い捨てのPowerShellプローブ(3つの`RemObjects.Elements*.dll`を
+`Add-Type -Path`で読み込み、`Languages.Register(new OxygeneLanguage)`
+した上で`TokenStream.SetText`を呼ぶ、§16.1と同じAPIの使い方)で
+indexerのサンプルを実際にトークナイズして確認した — 推測に頼らな
+かった。命名が非自明だったため(`[`/`]`に対応するのは
+`T_OpenBlock`/`T_CloseBlock`であり、それとは別に無関係な
+`T_CloseBracket`というフィールドも存在するので、「Bracket」で
+推測していたら誤った定数を選んでいたはずである)。
+
+### 18.3 1つの`type`セクション内の複数型: 既に正しく動作していることを確認、修正不要
+
+`ScanFile`を注意深く読んだところ、`currentTypeName`/`typeDepth`は、
+`depth = typeDepth`となる任意の型の`end`で無条件にリセットされており、
+1つの`type`セクションにいくつ型宣言が並んでいようと、リセット処理が
+「最初の型だけ」に限定されている箇所はどこにもなかった。コード
+読解だけを鵜呑みにせず、後述(§18.4)の新規フィクスチャで実機
+確認も行った: 1つの`type`セクション内で隣り合う2つのクラスに、
+同名だが正反対のnullabilityを持つメンバーを宣言し、もし何らかの
+漏れがあれば1つの誤った辞書エントリに衝突していたはずというケース。
+ここではコード変更は不要だった — 単に、これまでフィクスチャで
+検証されたことがなかっただけで、実際にはもう正しく動いていた。
+
+### 18.4 新規フィクスチャ: `tests/fixtures/MultiTypeAndIndexer`
+
+1つの`type`セクションの下にある隣り合う2つのクラス(`Alpha`、
+`Beta`)がそれぞれ`Name`という名前のプロパティを正反対の
+nullabilityで宣言する(`Alpha.Name`はnullable、`Beta.Name`は
+not nullable)— §18.3の判別力を持つケース。`Beta`はさらにindexer
+プロパティ(`Item[aIndex: Int32]`、not nullable、自動実装の
+`read write`ではなく明示的な`GetItem`/`SetItem`メソッドで実装 —
+indexedプロパティにはコンパイラが自動生成できる単一のバッキング
+フィールドが存在しないため)と、無注釈の`Count: Int32`(本物の
+`Unknown`メンバーを混在させるため)も宣言する。`cases.json`には
+2ケースをロック(CLIデフォルトと`--nrt-unknown-policy non-null`) —
+`CLAUDE.md`にある、NRT系フィクスチャには必ずnon-nullケースも
+含めるという既定方針に従った。
+
+ベースラインとしてコミットする前に実機で確認した(`-UpdateSnapshots`
+を信用するだけでなく): ビルドしたフィクスチャDLLに対して直接
+`tsgen`を実行し、出力を確認 — `Alpha.Name`と`Beta.Name`は互いに
+漏れることなく正しいnullabilityで出力され、`Beta.Item`(indexer)は
+両方のポリシーで`not nullable`(`| null`なし)として返ってきた。
+これだけで既に「not nullableとして検出された」ことと「一切検出されず
+Unknownにフォールバックした」こと(Unknownならデフォルトポリシーで
+`| null`が付く)を区別できている — non-nullケースはさらに
+`Beta.Item`と(本物の`Unknown`である)`Beta.Count`を区別しており、
+`CLAUDE.md`が`TokenizerEdgeCases`について既に記載している
+検出漏れ検知のロジックと一致する。`SampleModel`と
+`TokenizerEdgeCases`のスナップショットはスキャナ変更後もバイト単位で
+同一のままだった(両方とも`git diff`が空)— `TOK_PROPERTY`分岐の
+書き換えによる退行がないことを確認した。
+
+### 18.5 検証
+
+- `tools/dev-build.ps1` — クリーンビルド、新規警告なし。
+- `tools/run-tests.ps1 -UpdateSnapshots`、続けて`tools/run-tests.ps1`
+  (通常モード): 3つのフィクスチャ全体で6/6ケースがパス
+  (`MultiTypeAndIndexer` x2、`SampleModel` x2、
+  `TokenizerEdgeCases` x2)。
+- `SampleModel`/`TokenizerEdgeCases`の期待値スナップショットに対する
+  `git diff`: 空(退行なし)。
+
+### 18.6 今回直していないこと
+
+- nested typesはエンドツーエンドで未対応のまま。今回、単なる
+  スキャナだけの穴ではなく、3段階(Loader/IR/Emitter)にまたがる
+  ギャップだと分かった — §18.1参照。ユーザーの明示的な判断により、
+  今回は着手していない。
+- `ScanFile`は今も深さカウンタ方式のヒューリスティックであり、
+  パーサーではない。今回はそれが認識できるメンバー宣言の「形」
+  (indexer)を広げただけで、根底にあるネスト/型追跡モデル自体は
+  変えていない。

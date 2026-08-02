@@ -1,0 +1,12 @@
+[
+  {
+    "name": "default",
+    "args": [],
+    "expected": "expected/default.d.ts"
+  },
+  {
+    "name": "non-null",
+    "args": ["--nrt-unknown-policy", "non-null"],
+    "expected": "expected/non-null.d.ts"
+  }
+]

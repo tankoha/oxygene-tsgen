@@ -22,12 +22,17 @@ generics, the pluggable type-mapping/plugin chain, and split-file output
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
 output against committed `expected/*.d.ts` snapshots per fixture's
 `cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
-an intentional output change. See `HANDOFF.md` §15. Two fixtures exist:
-`SampleModel` (enums, explicit NRT, unknown-policy fallback) and
+an intentional output change. See `HANDOFF.md` §15. Three fixtures exist:
+`SampleModel` (enums, explicit NRT, unknown-policy fallback),
 `TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
-trailing newline). Neither covers nested types, multiple types per
-`type` section, or indexer-style property parameter lists — still open
-per `HANDOFF.md` §12.6.
+trailing newline), and `MultiTypeAndIndexer` (multiple types sharing one
+`type` section, indexer-style properties — see `HANDOFF.md` §18). Nested
+types remain uncovered and out of scope: `AssemblyLoader` filters out
+every `t.IsNested` type before it reaches the IR, and `DtsEmitter` has no
+nested-`interface` output path either, so real support would need
+coordinated Loader + IR + Emitter changes, not a scanner fix — see
+`HANDOFF.md` §18.1 for the full explanation and the decision to leave it
+out of scope for now.
 
 When adding an NRT fixture, include a `--nrt-unknown-policy non-null`
 case: under the default policy an `Unknown` member and one that wrongly

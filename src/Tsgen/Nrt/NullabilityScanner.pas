@@ -21,15 +21,25 @@ type
   {
     Heuristic scanner, not a full parser. Scoped to properties and fields
     declared directly inside a top-level type body (see HANDOFF.md §11 for
-    the scope decision). Known limitation: nested types within a single
-    file are not specifically supported -- the OUTER type's name is what
-    "wins" for any member the scanner walks past while still inside a
-    nested type's body (currentTypeName is only assigned once, on the
-    first class/record/interface open), so a nested type's own members
-    get incorrectly attributed to the outer type's key. Fine for the
-    Inertia Page Props POCOs this targets (flat classes, no nesting), but
-    should be hardened with real project fixtures before relying on it
-    more broadly.
+    the scope decision). Indexer-style properties ("property Item[Index:
+    Int32]: ...") are supported -- the bracketed parameter list is skipped
+    to find the colon that introduces the property's own type, matching
+    reflection's view (PropertyInfo.Name = "Item", ignoring the index
+    parameters). Multiple type declarations under one `type` section are
+    supported too, since currentTypeName/typeDepth reset on each type's
+    closing `end` regardless of how many types share the section.
+
+    Known limitation, unchanged: nested types within a single file are not
+    specifically supported -- the OUTER type's name is what "wins" for any
+    member the scanner walks past while still inside a nested type's body
+    (currentTypeName is only assigned once, on the first class/record/
+    interface open). This is currently moot in practice, though: nested
+    types are filtered out entirely by AssemblyLoader (t.IsNested), and
+    DtsEmitter has no nested-interface output either, so a nested type's
+    members never reach the generated .d.ts regardless of what the scanner
+    attributes them to. Supporting nested types for real needs matching
+    changes in AssemblyLoader and DtsEmitter, not just here -- see
+    HANDOFF.md for the decision to leave this out of scope for now.
 
     Token IDs are read directly off RemObjects.Elements.Code.Oxygene.Token
     (the same public static constants the tokenizer itself uses) rather
@@ -54,6 +64,8 @@ type
     const TOK_COMMA = Token.T_Comma;
     const TOK_OPENROUND = Token.T_OpenRound;
     const TOK_CLOSEROUND = Token.T_CloseRound;
+    const TOK_OPENBLOCK = Token.T_OpenBlock;
+    const TOK_CLOSEBLOCK = Token.T_CloseBlock;
     const TOK_DOT = Token.T_Dot;
     const TOK_CLASS = Token.TI_class;
     const TOK_RECORD = Token.TI_record;
@@ -231,9 +243,31 @@ type
           if depth > 0 then dec(depth);
         end
         else if tok.Id = TOK_PROPERTY then begin
-          if (not String.IsNullOrEmpty(currentTypeName)) and (i + 2 < aTokens.Count)
-             and (aTokens[i + 1].Id = TOK_IDENTIFIER) and (aTokens[i + 2].Id = TOK_COLON) then
-            ScanMemberDecl(aTokens, i + 2, currentTypeName, aTokens[i + 1].Text, aResult);
+          if (not String.IsNullOrEmpty(currentTypeName)) and (i + 1 < aTokens.Count)
+             and (aTokens[i + 1].Id = TOK_IDENTIFIER) then begin
+            var memberName := aTokens[i + 1].Text;
+            var colonIndex := i + 2;
+            if (colonIndex < aTokens.Count) and (aTokens[colonIndex].Id = TOK_OPENBLOCK) then begin
+              {
+                Indexer-style property, e.g.
+                "property Item[Index: Int32]: nullable String read ... write ...;".
+                Skip the bracketed parameter list to find the colon that
+                introduces the property's own type -- reflection loads this
+                as a property named "Item" (PropertyInfo.Name ignores the
+                index parameters), so the member name stays the identifier
+                before "[", not anything inside the brackets.
+              }
+              var bracketDepth := 1;
+              inc(colonIndex);
+              while (colonIndex < aTokens.Count) and (bracketDepth > 0) do begin
+                if aTokens[colonIndex].Id = TOK_OPENBLOCK then inc(bracketDepth)
+                else if aTokens[colonIndex].Id = TOK_CLOSEBLOCK then dec(bracketDepth);
+                inc(colonIndex);
+              end;
+            end;
+            if (colonIndex < aTokens.Count) and (aTokens[colonIndex].Id = TOK_COLON) then
+              ScanMemberDecl(aTokens, colonIndex, currentTypeName, memberName, aResult);
+          end;
         end
         else if (tok.Id = TOK_IDENTIFIER) and (parenDepth = 0) and (typeDepth >= 0) and (depth = typeDepth)
                 and (i + 1 < aTokens.Count) and (aTokens[i + 1].Id = TOK_COLON) then

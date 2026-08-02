@@ -1440,3 +1440,137 @@ earlier thread's context, for no benefit.
    Trial use" warnings (§4 task list, §9.3) lose most of their urgency
    — worth revisiting once Marc replies, rather than continuing to
    carry this as a high-severity open item by default.
+
+**Status as of this session's start (2026-08-02, later same day):** both
+inboxes were checked before continuing further work — still no reply from
+RemObjects on either item. Per the user, the original §9/§17 reply landed
+late Friday US time (their CEO answering during overtime), so the plan is
+to let the weekend pass without chasing a reply rather than escalating.
+Non-code work is otherwise idle on both items; see §18 for what this
+session did instead (NRT scanner hardening, code-only, no vendor
+dependency).
+
+---
+
+## 18. NRT scanner hardening: indexer properties fixed, multi-type-section verified, nested types scoped out (Windows hands-on, 2026-08-02)
+
+Continuation of the `HANDOFF.md` §12.6/§16.4 known-limitations list
+(nested types, multiple types under one `type` section, indexer-style
+property parameter lists), now that §15's snapshot-test net makes this
+kind of scanner change safe to attempt (per §16.4's own recommendation).
+User chose this over the other open-item candidates (vendor follow-up,
+`INullabilityProvider` chain/`mark-unknown` policy, next `docs/DESIGN.md`
+§10.2 post-MVP item) for this round.
+
+### 18.1 Scope correction found before writing any fix
+
+Before touching the scanner, checked what `AssemblyLoader.pas` and
+`DtsEmitter.pas` actually do with nested types, rather than assuming the
+scanner's own doc comment (which blamed itself) was the whole story.
+**`AssemblyLoader.Load` filters out every `t.IsNested` type before it
+ever reaches `RawAssembly`** (`AssemblyLoader.pas:26`, part of the §13
+"skipped non-public/nested/generic/unsupported-kind types" warning), and
+**`DtsEmitter` has no nested-`interface`-in-`interface` output path at
+all** — only namespace-level nesting (`declare namespace { ... }`).
+Consequence: fixing `NullabilityScanner`'s nested-type attribution alone
+cannot change any generated output, because a nested type's members never
+reach the IR or the emitter regardless of what key the scanner attributes
+them to. Real nested-type support needs coordinated changes across all
+three stages (Loader, IR key format, Emitter), not a scanner-only patch.
+
+**User decision (2026-08-02): leave nested types out of scope for this
+round.** `NullabilityScanner.pas`'s header comment was updated to record
+this (why it's currently moot, not just that it's unsupported) instead of
+silently carrying the stale "should be hardened" wording forward. Treat
+nested-type support as a separate, future task spanning
+`AssemblyLoader.pas` + `IrBuilder.pas`/`IrModel.pas` (nested-type key
+format — CLR uses `Outer+Inner` for `Type.FullName`) + `DtsEmitter.pas`
+(nested `interface` emission), not something to pick up piecemeal in the
+scanner again.
+
+### 18.2 Indexer-style properties: real bug, fixed
+
+`NullabilityScanner.ScanFile`'s `TOK_PROPERTY` branch required the token
+immediately after the property name to be `TOK_COLON`
+(`property Name: Type ...`). An indexer declaration
+(`property Item[aIndex: Int32]: not nullable String read ... write ...;`)
+has `TOK_OPENBLOCK` (`[`) there instead, so the whole branch's condition
+failed and indexer properties were silently never annotated — always
+`Unknown`, regardless of source. `AssemblyLoader` already loads indexer
+properties fine via `t.GetProperties(...)` (reflection's
+`PropertyInfo.Name` is `"Item"`, ignoring index parameters), so this was
+purely a scanner gap, not a Loader one.
+
+Fix: when the token after the property name is `TOK_OPENBLOCK`, skip
+forward tracking bracket depth until the matching `TOK_CLOSEBLOCK`, then
+continue looking for `TOK_COLON` from there — same shape as the existing
+`parenDepth` skip used to exclude method parameter lists, just for `[...]`
+instead of `(...)`. `Token.T_OpenBlock`/`Token.T_CloseBlock` are the
+correct constants for `[`/`]` — confirmed by tokenizing a throwaway
+indexer snippet via `TokenStream` from a disposable PowerShell probe
+(`Add-Type -Path` on the three `RemObjects.Elements*.dll`s, then
+`Languages.Register(new OxygeneLanguage)` + `TokenStream.SetText`, same
+API shape as §16.1) rather than guessing field names — the naming turned
+out to be non-obvious (`T_OpenBlock`/`T_CloseBlock` for `[`/`]`, and a
+separate, unrelated `T_CloseBracket` field exists for something else
+entirely, so guessing "Bracket" would have picked the wrong constant).
+
+### 18.3 Multiple types under one `type` section: verified already correct, no fix needed
+
+Reading `ScanFile` closely: `currentTypeName`/`typeDepth` already reset
+unconditionally on any type's closing `end` where `depth = typeDepth`,
+regardless of how many type declarations share one `type` section — nothing
+in the reset logic is scoped to "the first type only". Confirmed hands-on
+with the new fixture below (§18.4) rather than trusting the code-reading
+alone: two sibling classes declaring a same-named member with *opposite*
+nullability right next to each other in one `type` section, which would
+have collided into a single, wrong dictionary entry if any leak existed.
+No code change was needed here — this item turned out to already work; it
+just hadn't been exercised by a fixture before.
+
+### 18.4 New fixture: `tests/fixtures/MultiTypeAndIndexer`
+
+Two sibling classes (`Alpha`, `Beta`) both under one `type` section, each
+declaring a property named `Name` with opposite nullability (`Alpha.Name`
+nullable, `Beta.Name` not nullable) — the discriminating case for §18.3.
+`Beta` also declares an indexer property (`Item[aIndex: Int32]`, not
+nullable, backed by explicit `GetItem`/`SetItem` methods rather than
+auto-implemented `read write`, since an indexed property has no single
+backing field for the compiler to auto-generate) and an unannotated
+`Count: Int32` to keep a genuine-`Unknown` member in the mix. Two cases
+locked in (`cases.json`): CLI defaults and `--nrt-unknown-policy
+non-null`, per `CLAUDE.md`'s standing guidance to always include a
+non-null case alongside default for NRT fixtures.
+
+Verified hands-on before committing as a baseline: ran `tsgen` directly
+against the built fixture DLL and inspected the output (not just trusted
+`-UpdateSnapshots`) — `Alpha.Name` and `Beta.Name` came back with the
+correct, non-colliding nullability, and `Beta.Item` (the indexer) came
+back `not nullable` (no `| null`) under *both* policies, which by itself
+already distinguishes "detected as not-nullable" from "never detected,
+fell back to Unknown" (Unknown would show `| null` under the default
+policy) — the non-null case additionally distinguishes `Beta.Item` from
+`Beta.Count` (genuinely `Unknown`), consistent with the leak-detection
+rationale `CLAUDE.md` already documents for `TokenizerEdgeCases`.
+`SampleModel` and `TokenizerEdgeCases` snapshots came back byte-identical
+after the scanner change (`git diff` empty for both), confirming no
+regression from the `TOK_PROPERTY` branch rewrite.
+
+### 18.5 Verification
+
+- `tools/dev-build.ps1` — clean build, no new warnings.
+- `tools/run-tests.ps1 -UpdateSnapshots` then `tools/run-tests.ps1` (plain):
+  6/6 cases pass across all three fixtures (`MultiTypeAndIndexer` x2,
+  `SampleModel` x2, `TokenizerEdgeCases` x2).
+- `git diff` on `SampleModel`/`TokenizerEdgeCases` expected snapshots:
+  empty (no regressions).
+
+### 18.6 What this does not fix
+
+- Nested types remain unsupported end-to-end, now understood as a
+  three-stage (Loader/IR/Emitter) gap rather than a scanner-only one —
+  see §18.1. Not attempted this round per the user's explicit decision.
+- `ScanFile` is still a depth-counter heuristic, not a parser; this round
+  only extended what member-declaration *shapes* it recognizes
+  (indexers), it didn't change the underlying nesting/type-tracking
+  model.
