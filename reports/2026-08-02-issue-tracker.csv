@@ -17,7 +17,7 @@ No.,発見フェーズ#,発見フェーズ名,発見元,カテゴリ,重要度,�
 16,4,Fable5レビュー1回目,Fable5,運用リスク(ライセンス),低,.gitignoreのbin/がcase-sensitive環境でBin/にマッチしない可能性,.gitignore,修正済み,5,修正対応1,[Bb]in/、[Oo]bj/、*.deps.json等のパターンを追加
 17,4,Fable5レビュー1回目,Fable5,実装上のリスク,低,IsTypeOpenのルックバック上限(8トークン)が小さすぎ、長い修飾子チェーンで検出漏れの可能性,NullabilityScanner.pas,修正済み,5,修正対応1,上限を8から64に緩和
 18,4,Fable5レビュー1回目,Fable5,実装バグ(サイレント失敗),中,AssemblyLoaderが非public/nested/genericな型を無言で除外し、ユーザーに伝わらない,AssemblyLoader.pas,修正済み,5,修正対応1,スキップ件数をカウントし警告を出力
-19,4,Fable5レビュー1回目,Fable5,運用リスク(ライセンス),高,Trial版3日間使用上限の確認が未解決のまま、継続的にEBuildを使い続けている,ライセンス全体(HANDOFF §9.2),未対応,,,ベンダー確認またはライセンス購入が必要(コード対応では解決しない)
+19,4,Fable5レビュー1回目,Fable5,運用リスク(ライセンス),高,Trial版3日間使用上限の確認が未解決のまま、継続的にEBuildを使い続けている,ライセンス全体(HANDOFF §9.2),解決済み,22,Trial期間に関するベンダー確認,"RemObjectsサポートからベンダー確認が得られた: 「3日間」はtypoであり、実際のTrial版使用期限は30日間。2026-08-02に送付したフォローアップへの返信で確認(HANDOFF.md §9.2/§17)。CLAUDE.mdのライセンス制約の節も更新済み"
 20,4,Fable5レビュー1回目,Fable5,ドキュメント負債,中,DESIGN.md §4/§10.1/§11が実機検証結果と乖離し、3箇所で状態が分散,docs/DESIGN.md,修正済み,7,DESIGN.md §4書き直し,§4を全面書き直し、§10.1/§11項目1も同様に更新(Fable5に依頼)
 21,6,Fable5レビュー2回目(検証),Fable5,対応漏れ,中,「RemObjectsへのdeps.json不具合報告」が「対応済み」にも「あえてやらない」リストにも入らず欠落,HANDOFF.md §13,修正済み,6,Fable5レビュー2回目(検証),先送りリストに明示的に追記
 22,6,Fable5レビュー2回目(検証),Fable5,設計上の副作用,低,警告出力のためDtsEmitter.Emitが純粋関数でなくなった。将来のDiagnostics実装時に要対応,DtsEmitter.pas,修正済み,12,Diagnosticsコンポーネント導入,"新規Tsgen.Diagnostics(DiagnosticList)を追加しAssemblyLoader.Load/DtsEmitter.Emitを共に純粋関数化。DtsEmitter側は未マッピング型ごとに警告を集約(重複排除)し、Program.pasが最後にまとめてstderrへ出力するよう変更"

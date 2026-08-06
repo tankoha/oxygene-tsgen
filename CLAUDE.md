@@ -314,16 +314,14 @@ confirmed directly with RemObjects by email (2026-08-01 — see
   engineering. This confirmation is narrow: it does not extend to
   decompilation, disassembly, or anything not explicitly asked about (see
   `HANDOFF.md` §9.1 scope note).
-- **Unresolved:** the same vendor reply implies Trial usage itself may be
-  capped at 3 days, separately from the distribution restriction above.
-  Exact meaning unconfirmed as of 2026-08-01 (calendar days since install?
-  cumulative days of use? evaluation sessions?) — see `HANDOFF.md` §9.2.
-  Don't assume extended Trial access is available for Phase 2 work
-  without checking this first. A follow-up asking the vendor to confirm
-  whether "3 days" was a typo for "30 days" was sent 2026-08-02
-  (`HANDOFF.md` §17 item 2); no reply yet as of that writing. Check
-  `HANDOFF.md` §9.2/§17 for the current answer before treating the 3-day
-  figure as settled.
+- **Resolved 2026-08-07** (vendor confirmation, see `HANDOFF.md` §9.2):
+  the "3 days" figure in the original 2026-08-01 reply was a typo — the
+  Trial edition's actual usage window is **30 days**, confirmed directly
+  by RemObjects support in reply to the 2026-08-02 follow-up
+  (`HANDOFF.md` §17 item 2). Not a hard blocker for Phase 2 work as
+  originally feared; still worth tracking the 30-day window against the
+  install date (2026-08-01) if a Personal/Academic license isn't
+  obtained before then.
 
 ## Documentation conventions
 

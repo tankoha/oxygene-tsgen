@@ -630,6 +630,16 @@ Trial use continued without waiting on this answer. Update this section
 once Marc replies — if it *is* 30 days, the urgency behind issue-tracker
 item #19 (`reports/2026-08-02-issue-tracker.csv`) drops substantially.
 
+**Resolved 2026-08-07: confirmed a typo, actual window is 30 days.**
+RemObjects Support replied to the 2026-08-02 follow-up: "Trial edition
+is for no longer than '3 days.' I was initially under the impression
+that the trial period was actually 30 days. [...] That was a typo,
+sorry, yes. it's 30 days." This closes the open question — the Trial
+edition's usage window is 30 days from install (2026-08-01), not 3.
+Issue-tracker item #19 (`reports/2026-08-02-issue-tracker.csv`) is
+closed accordingly. `CLAUDE.md`'s license-constraints section updated to
+reflect this.
+
 ### 9.3 Impact on §11 item 4 (Distribution/packaging approach)
 
 The "Distribution/packaging approach" open question must now be decided
@@ -1440,6 +1450,9 @@ earlier thread's context, for no benefit.
    Trial use" warnings (§4 task list, §9.3) lose most of their urgency
    — worth revisiting once Marc replies, rather than continuing to
    carry this as a high-severity open item by default.
+   **Resolved 2026-08-07: confirmed typo, actual window is 30 days —
+   see §9.2's update for the full reply text.** Issue-tracker item #19
+   closed.
 
 **Status as of this session's start (2026-08-02, later same day):** both
 inboxes were checked before continuing further work — still no reply from
