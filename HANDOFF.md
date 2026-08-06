@@ -2682,3 +2682,65 @@ keeping on record so a future session doesn't have to re-derive them:
   with C# leaking into assumptions about Oxygene syntax — so treat any
   new "this should just work like in C#" assumption as a place to verify
   hands-on first, not a third instance to add here.
+
+## 26. Form/`useForm()` error type implemented (docs/DESIGN.md §2.6 item 3 / §5.4, 2026-08-07)
+
+Of the three Inertia-specific type-generation targets scoped in §2.6
+(Page Props, Shared Data, Form/`useForm()` errors), only Page Props had
+been implemented (§24). This closes the second of the two remaining
+items — Form/`useForm()` errors — leaving only Shared Data types open.
+
+**Scope decision (asked of the user before implementing, since §5.4
+explicitly left this open)**: field names for the error-shape type are
+sourced from the *same* field list already resolved for the
+corresponding page's Props type, not from a separate scan of a POST
+action's request-DTO `[Required]`/etc. attributes. The latter is closer
+to how `useForm()` is actually used in real Inertia apps, but would
+require a whole new entry-point-discovery mechanism (finding the POST
+action that handles a given page's form submission and correlating it
+back to the page) — a materially bigger feature. Reusing the Props
+field list needs zero new scanning: `InertiaIrBuilder.Build` already has
+the exact `page.Fields` list in hand right after building the Props
+type. This is the same kind of "one reasonable v1 choice, not a settled
+decision" call already made for Props type naming (§22.6/§24, §7.4 still
+open) — revisit if/when Shared Data or a real request-DTO scan is built
+and a natural correlation mechanism exists.
+
+**Output shape**: `export type ProfileFormErrors = Partial<Record<'User'
+| 'IsAdmin' | ..., string>>;` — a plain TypeScript type alias, not an
+`interface`. This needed a third `IrTypeLite.Kind` value,
+`FormErrorsLike` (`src/Tsgen/Ir/IrModel.pas`), alongside the existing
+`ClassLike`/`EnumLike`, since neither existing emission path fits: it's
+not an object shape (interface) and not a fixed enum. `Members` is
+reused for the field-name list only — `TypeRef`/`Nullability` are set on
+`ClassLike` members but simply never populated for `FormErrorsLike` ones
+(`DtsEmitter.EmitType` never reads them for this kind).
+
+**The empty-fields edge case is real, not speculative**: `InertiaScanner.pas`'s
+own `ParseRenderCall` comment already documented that a page can
+legitimately have zero fields (props variable declared, never assigned
+before `Inertia.Render`). A union of zero string literals isn't valid
+TypeScript syntax, so `DtsEmitter.EmitType` special-cases `Members.Count
+= 0` to emit `Partial<Record<never, string>>` instead — `Record<never,
+V>` is valid TS for "no keys." Added a second page (`Empty`, no field
+assignments) to `tests/fixtures/InertiaMode/InertiaMode.pas` specifically
+to exercise this path in the snapshot suite rather than leaving it
+manually-verified-only.
+
+**Naming/placement**: `SanitizePropsTypeName`'s prefix logic was
+factored out into `SanitizeComponentBaseName` and reused by a new
+`SanitizeFormErrorsTypeName` (suffix `FormErrors` instead of `Props`),
+so `pages/Profile` yields both `ProfileProps` and `ProfileFormErrors` —
+visibly paired names. Kept in the same `'Props'` namespace as the Props
+types (not a separate namespace) since the two are always emitted
+together per page; same "placeholder, not settled" caveat as the
+namespace choice itself (§24, §7.4).
+
+**Verification**: rebuilt via `tools/dev-build.ps1`, regenerated
+`InertiaMode` fixture snapshots via `tools/run-tests.ps1
+-UpdateSnapshots`, and read the actual diff by eye before trusting it
+(`git diff -- tests/fixtures/InertiaMode/expected/`) — confirmed only
+`InertiaMode`'s two snapshots changed (all other fixtures byte-identical
+after the blanket regeneration) and that both the multi-field
+(`ProfileFormErrors`) and zero-field (`EmptyFormErrors`) cases render
+correctly. Full suite re-run afterward: 14/14 pass.

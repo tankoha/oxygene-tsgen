@@ -58,7 +58,7 @@ type
       after the last slash is usually the unique, meaningful part), strip
       anything that isn't a letter/digit, and append "Props".
     }
-    class method SanitizePropsTypeName(aComponentName: String): String;
+    class method SanitizeComponentBaseName(aComponentName: String): String;
     begin
       var name := aComponentName;
       var slashIdx := name.LastIndexOf('/');
@@ -70,7 +70,25 @@ type
 
       var sanitized := sb.ToString();
       if String.IsNullOrEmpty(sanitized) then sanitized := 'Unnamed';
-      result := sanitized + 'Props';
+      result := sanitized;
+    end;
+
+    class method SanitizePropsTypeName(aComponentName: String): String;
+    begin
+      result := SanitizeComponentBaseName(aComponentName) + 'Props';
+    end;
+
+    {
+      docs/DESIGN.md §5.4 / §2.6 item 3: field names for the useForm()
+      error shape are sourced from the same field discovery as the
+      corresponding Page Props type (not a separate DTO scan -- see
+      HANDOFF.md for the scope decision), so the name is just the same
+      base name with a different suffix, keeping the two types visibly
+      paired (e.g. "ProfileProps" / "ProfileFormErrors").
+    }
+    class method SanitizeFormErrorsTypeName(aComponentName: String): String;
+    begin
+      result := SanitizeComponentBaseName(aComponentName) + 'FormErrors';
     end;
 
   public
@@ -143,6 +161,28 @@ type
         end;
 
         result.Types.Add(propsType);
+
+        {
+          docs/DESIGN.md §2.6 item 3 / §5.4: one Partial<Record<...,
+          string>> form-error-shape type per page, reusing the exact same
+          field-name list as the Props type above (not a separate DTO
+          scan -- see the scope decision in HANDOFF.md). TypeRef/
+          Nullability aren't meaningful for this kind, so only Name is
+          set on each member; DtsEmitter.EmitType ignores the rest for
+          IrTypeKindLite.FormErrorsLike.
+        }
+        var formErrorsType := new IrTypeLite;
+        formErrorsType.NamespaceName := 'Props';
+        formErrorsType.Name := SanitizeFormErrorsTypeName(page.ComponentName);
+        formErrorsType.Kind := IrTypeKindLite.FormErrorsLike;
+
+        for each field in page.Fields do begin
+          var im := new IrMemberLite;
+          im.Name := field.Name;
+          formErrorsType.Members.Add(im);
+        end;
+
+        result.Types.Add(formErrorsType);
       end;
     end;
   end;

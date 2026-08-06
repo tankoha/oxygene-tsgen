@@ -20,4 +20,8 @@ declare namespace Props {
     Meta: InertiaMode.MetaDto | null;
     Note: unknown | null;
   }
+  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note', string>>;
+  export interface EmptyProps {
+  }
+  export type EmptyFormErrors = Partial<Record<never, string>>;
 }

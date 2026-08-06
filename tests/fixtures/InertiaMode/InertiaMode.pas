@@ -67,6 +67,16 @@ type
     begin
       result := 'x';
     end;
+
+    // Props-less page (declared, never assigned) -- a legitimate case
+    // per InertiaScanner.pas's ParseRenderCall comment. Exercises the
+    // FormErrorsLike `never`-fallback in DtsEmitter.EmitType, since a
+    // zero-field page can't produce a valid union of string literals.
+    method Empty: Object;
+    begin
+      var props := new InertiaProps;
+      result := Inertia.Render('pages/Empty', props);
+    end;
   end;
 
 end.

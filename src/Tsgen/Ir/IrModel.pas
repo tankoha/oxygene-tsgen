@@ -33,7 +33,16 @@ type
     NumericValue: Int64;
   end;
 
-  IrTypeKindLite = public enum (ClassLike, EnumLike);
+  {
+    FormErrorsLike reuses Members for its field-name list only (Name is
+    read, TypeRef/Nullability are ignored) -- see DtsEmitter.EmitType,
+    which renders it as `Partial<Record<'field1' | 'field2', string>>`
+    rather than an interface. Kept as a third IrTypeLite kind instead of a
+    parallel type so InertiaIrBuilder can build it with the exact same
+    Members list already assembled for the paired Props type (docs/
+    DESIGN.md §5.4).
+  }
+  IrTypeKindLite = public enum (ClassLike, EnumLike, FormErrorsLike);
 
   IrTypeLite = public class
   public

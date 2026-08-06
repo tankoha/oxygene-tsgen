@@ -17,11 +17,13 @@ a Tokenizer-based NRT source scanner feeding an `INullabilityProvider`
 chain, a lightweight Stage 2 IR with generics support (`List<T>`/
 `Dictionary<K,V>`/`Nullable<T>`/arrays/user-defined-type references), a
 single-file Stage 4 `DtsEmitter`, and now (`--mode inertia`) the
-Inertia.js entry-point-driven mode itself — see `HANDOFF.md`
-§12/§22/§23/§24 for what was built, how, and its known limitations.
-Still missing: cycle detection (deliberately deferred, see below) and
-the pluggable type-mapping/plugin chain/split-file output. `docs/DESIGN.md`
-§10.2 has the post-MVP order.
+Inertia.js entry-point-driven mode itself, including Page Props types and
+Form/`useForm()` error types (two of `docs/DESIGN.md` §2.6's three
+Inertia-specific targets) — see `HANDOFF.md` §12/§22/§23/§24/§26 for what
+was built, how, and its known limitations. Still missing: Shared Data
+types (§2.6 item 2, the last of the three), cycle detection (deliberately
+deferred, see below), and the pluggable type-mapping/plugin chain/
+split-file output. `docs/DESIGN.md` §10.2 has the post-MVP order.
 
 **Automated snapshot tests exist now:** run `tools/run-tests.ps1` (builds
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
@@ -40,7 +42,9 @@ nullability — see `HANDOFF.md` §20), `Generics` (`List<T>`/
 `Dictionary<K,V>`/`Nullable<T>`/arrays/self-referential named-type
 references — see `HANDOFF.md` §23.4), and `InertiaMode` (`--mode
 inertia`: call-site detection, reachability BFS, an unresolvable prop
-value falling back to `unknown` + diagnostic — see `HANDOFF.md` §24.5).
+value falling back to `unknown` + diagnostic, the paired
+`XxxFormErrors` type per page, and a props-less page exercising its
+`Partial<Record<never, string>>` fallback — see `HANDOFF.md` §24.5/§26).
 Nested types themselves remain uncovered and out of scope for real
 support: `AssemblyLoader` filters out every `t.IsNested` type before it
 reaches the IR, and `DtsEmitter` has no nested-`interface` output path
@@ -117,6 +121,15 @@ non-generic `new NamedType(...)` prop values only; anything else
 conditional key-setting, `Inertia.Defer`/`Inertia.Merge`) falls back to
 `unknown` + a diagnostic rather than guessing — see `HANDOFF.md` §24.6
 for the full, deliberate limitations list before extending this.
+`InertiaIrBuilder.Build` also emits a paired `IrTypeKindLite.FormErrorsLike`
+type per page (`docs/DESIGN.md` §2.6 item 3/§5.4, `HANDOFF.md` §26) —
+`Partial<Record<'field1' | 'field2' | ..., string>>` reusing the *same*
+field-name list as the page's Props type, not a separate DataAnnotations
+scan of some request DTO (a deliberate, smaller-scope v1 choice, not what
+§5.4 originally proposed). `DtsEmitter.EmitType` renders this as a type
+alias, not an `interface`; an empty field list (a legitimate props-less
+page) falls back to `Partial<Record<never, string>>` since a union of
+zero string literals isn't valid TS.
 
 When adding an NRT fixture, include both a `--nrt-unknown-policy
 non-null` case and at least one deliberately-unannotated *reference-type*

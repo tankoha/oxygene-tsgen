@@ -77,10 +77,15 @@ Props型自体に加えて、以下も生成対象に含める設計になって
   page's own Props
   全ページ共通で注入される「**共有データ**」型 (認証ユーザー、フラッシュメッセージ等。
   Inertiaミドルウェアの `share()` 相当の機構経由) を各ページ固有のPropsとマージ
-- **Form/`useForm()` error-shape types**, derived from .NET validation
-  attributes (`[Required]`, etc.) for Inertia's client-side `useForm()` hook
-  .NETのバリデーション属性 (`[Required]` 等) から導出する、Inertiaのクライアント側
-  `useForm()` フック向けの**フォームエラー形状**型
+- **Form/`useForm()` error-shape types** for Inertia's client-side `useForm()`
+  hook — **v1 implemented** (`--mode inertia`, see "Current Status" below);
+  field names are reused from each page's own Props type rather than derived
+  from .NET validation attributes as originally designed, a deliberate
+  smaller-scope choice (`HANDOFF.md` §26)
+  Inertiaのクライアント側 `useForm()` フック向けの**フォームエラー形状**型 —
+  **v1実装済み** (`--mode inertia`。下記「現在のステータス」参照)。フィールド名は
+  元の設計にあった .NETバリデーション属性からの導出ではなく、各ページ自身のProps型
+  から再利用する、意図的に小さくしたスコープ (`HANDOFF.md` §26)
 - (Secondary, still supported — see
   [`docs/DESIGN.md` §8.3](docs/DESIGN.md#83-generic-restopenapi-integration-secondary-de-prioritized))
   generic .NET → TypeScript type-definition generation for projects not using
@@ -172,7 +177,11 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   §3.5) — finds `Inertia.Render` call sites, resolves the props shape
   built up via `props['key'] := value;` assignments in the same method,
   and emits only the types actually reachable from them. See "CLI Usage"
-  below for the exact value-expression shapes it resolves today.
+  below for the exact value-expression shapes it resolves today. Also
+  emits a paired Form/`useForm()` error-shape type per page
+  (`Partial<Record<'field1' | 'field2' | ..., string>>`, `docs/DESIGN.md`
+  §2.6 item 3/§5.4, `HANDOFF.md` §26), reusing the same field names as
+  the page's own Props type.
 - A `Tsgen.Diagnostics` component: pipeline stages return diagnostics
   instead of writing to the console directly, deduplicated and printed to
   stderr by the CLI.
@@ -205,7 +214,11 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   (`docs/DESIGN.md` §3.5)— `Inertia.Render`呼び出し箇所を見つけ、
   同じメソッド内の`props['key'] := value;`という代入で組み立てられた
   propsの形状を解決し、そこから実際に到達可能な型だけを出力する。
-  今日解決できる正確な値の式の形は下記「CLIの使い方」参照。
+  今日解決できる正確な値の式の形は下記「CLIの使い方」参照。ページごとに
+  対になるForm/`useForm()`エラー形状型も出力する
+  (`Partial<Record<'field1' | 'field2' | ..., string>>`、`docs/DESIGN.md`
+  §2.6項目3/§5.4、`HANDOFF.md` §26)。フィールド名はそのページ自身の
+  Props型と同じものを再利用する。
 - `Tsgen.Diagnostics`コンポーネント: パイプラインの各ステージはコンソール
   に直接書き込む代わりに診断情報を返し、CLIが重複排除した上でstderrへ
   出力する。
@@ -214,8 +227,9 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
 
 **Not yet implemented / 未実装:**
 
-- Shared Data merging and form-error types (`docs/DESIGN.md` §2.6 items
-  2–3) — the other two Inertia-specific targets alongside Page Props.
+- Shared Data merging (`docs/DESIGN.md` §2.6 item 2) — the one remaining
+  Inertia-specific target beyond Page Props and Form/`useForm()` error
+  types (both now implemented).
 - Cycle detection (deliberately deferred — not load-bearing for the
   current `.d.ts`-only emitter, `docs/DESIGN.md` §3.3), the pluggable
   type-mapping/plugin chain, split-file output, real nested-type support
@@ -225,8 +239,9 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   key-setting, `Inertia.Defer`/`Inertia.Merge` unwrapping (`HANDOFF.md`
   §24.6 has the full list).
 
-- 共有データのマージとフォームエラー型 (`docs/DESIGN.md` §2.6の項目
-  2–3) — Page Propsと並ぶ、残り2つのInertia固有ターゲット。
+- 共有データのマージ (`docs/DESIGN.md` §2.6の項目2) — Page PropsとForm/
+  `useForm()`エラー型 (どちらも実装済み) を除く、残り1つのInertia固有
+  ターゲット。
 - 循環参照検出 (あえて先送り — 現状の`.d.ts`専用Emitterにとっては
   必須ではないため、`docs/DESIGN.md` §3.3)、プラガブルな型マッピング/
   pluginチェーン、split-file出力、nested typesの本当のサポート
@@ -285,7 +300,13 @@ tsgen generate --assembly <path.dll> --source <dir> --out <dir> \
   methods, conditional key-setting, `Inertia.Defer`/`Inertia.Merge`) is
   not yet resolved and falls back to `unknown` plus a diagnostic naming
   the key, rather than a silent guess. `--mode inertia` requires
-  `--source` (there is nothing to scan without it).
+  `--source` (there is nothing to scan without it). Alongside each page's
+  Props interface, it also emits a paired
+  `Partial<Record<'field1' | 'field2' | ..., string>>` form-error-shape
+  type (e.g. `ProfileFormErrors` next to `ProfileProps`), reusing the
+  same field names rather than a separate DTO/validation-attribute scan
+  (`docs/DESIGN.md` §2.6 item 3/§5.4, `HANDOFF.md` §26); a props-less
+  page falls back to `Partial<Record<never, string>>`.
   `assembly`(既定)は、このセクション全体で説明している通り、アセンブリ内の
   全ての公開型に対して型を生成する。`inertia`は代わりに`--source`を走査して
   `Inertia.Render(componentName, propsVar)`呼び出し箇所を検出し、呼び出し
@@ -302,7 +323,13 @@ tsgen generate --assembly <path.dll> --source <dir> --out <dir> \
   られるprops、条件分岐依存のキー設定、`Inertia.Defer`/`Inertia.Merge`)
   はまだ解決できず、黙って推測するのではなく`unknown`とキー名を含む診断
   警告にフォールバックする。`--mode inertia`は`--source`を必須とする
-  (それなしでは走査する対象が何もない)。
+  (それなしでは走査する対象が何もない)。各ページのProps interfaceに加え、
+  対になる`Partial<Record<'field1' | 'field2' | ..., string>>`形式の
+  フォームエラー形状型も出力する(例: `ProfileProps`と並ぶ
+  `ProfileFormErrors`)。別途DTO/バリデーション属性をスキャンするのでは
+  なく、同じフィールド名を再利用する(`docs/DESIGN.md` §2.6項目3/§5.4、
+  `HANDOFF.md` §26)。propsなしページの場合は`Partial<Record<never,
+  string>>`にフォールバックする。
 - `--assembly` (required) — path to the built target `.dll`, loaded as
   metadata only via `MetadataLoadContext`.
   (必須) — 対象の `.dll`。`MetadataLoadContext` でメタデータのみ読み込む。

@@ -2636,3 +2636,67 @@ scratchpadプローブで`'it''s'`をトークナイズして検証した: 正�
   「これはC#と同じように動くはず」という思い込みが出てきたら、ここに
   3件目として追記するのではなく、まず実機で検証する対象として扱う
   こと。
+
+## 26. Form/`useForm()`エラー型の実装(docs/DESIGN.md §2.6 item 3 / §5.4、2026-08-07)
+
+§2.6でスコープされていた3つのInertia向け生成対象(Page Props、Shared
+Data、Form/`useForm()`エラー)のうち、実装済みだったのはPage Propsのみ
+だった(§24)。今回、残る2件のうちの1件であるForm/`useForm()`エラーを
+実装した。残るはShared Data型のみとなる。
+
+**スコープの決定(§5.4がこの点を明示的に未決としていたため、実装前に
+ユーザーに確認)**: エラー形状型のフィールド名は、対応するページの
+Props型で既に解決済みの同じフィールドリストから取得する方式とし、POST
+アクションのリクエストDTOの`[Required]`等の属性を別途スキャンする方式
+は採らなかった。後者の方が実際の`useForm()`の使われ方に近いが、ある
+ページのフォーム送信を処理するPOSTアクションを見つけ、それを元のページ
+に関連付けるという、まったく新しいエントリーポイント検出の仕組みが
+必要になり、規模が大きく異なる機能になる。Props側のフィールドリストを
+再利用する方式であれば新しいスキャンは一切不要である —
+`InertiaIrBuilder.Build`はProps型を組み立てた直後に、まさにその
+`page.Fields`を手元に持っている。これはProps型の命名(§22.6/§24、§7.4
+は今も未決)で既に行ったのと同種の「一つの妥当なv1判断であり、確定した
+決定ではない」という位置づけの選択であり、Shared Dataや実際のリクエスト
+DTOスキャンが実装され、自然な対応付けの仕組みが存在するようになったら
+見直す対象である。
+
+**出力形状**: `export type ProfileFormErrors = Partial<Record<'User' |
+'IsAdmin' | ..., string>>;` — `interface`ではなく、素のTypeScript型
+エイリアスである。既存の`ClassLike`/`EnumLike`のどちらの出力経路にも
+当てはまらない(オブジェクト形状=interfaceでもなければ、固定の列挙型
+でもない)ため、`IrTypeLite.Kind`に3つ目の値`FormErrorsLike`
+(`src/Tsgen/Ir/IrModel.pas`)を追加する必要があった。`Members`は
+フィールド名のリストとしてのみ再利用しており、`TypeRef`/
+`Nullability`は`ClassLike`のメンバーでは設定されるが、
+`FormErrorsLike`のメンバーでは単に埋められない(`DtsEmitter.EmitType`
+はこの種別に対してそれらを一切読まない)。
+
+**フィールド数ゼロのエッジケースは架空のものではない**:
+`InertiaScanner.pas`自身の`ParseRenderCall`のコメントに、props変数が
+宣言だけされて`Inertia.Render`の前に一度も代入されない、フィールド数
+ゼロのページが正当なケースとして既に記載されている。文字列リテラルの
+和集合をゼロ個で作ることは有効なTypeScript構文ではないため、
+`DtsEmitter.EmitType`は`Members.Count = 0`を特別扱いし、代わりに
+`Partial<Record<never, string>>`を出力する — `Record<never, V>`は
+「キーなし」を表す有効なTS構文である。このパスをスナップショット
+スイートで実際に検証するため、手動検証だけに頼らず、
+`tests/fixtures/InertiaMode/InertiaMode.pas`に2つ目のページ
+(`Empty`、フィールド代入なし)を追加した。
+
+**命名・配置**: `SanitizePropsTypeName`の接頭辞部分のロジックを
+`SanitizeComponentBaseName`として切り出し、新しい
+`SanitizeFormErrorsTypeName`(接尾辞は`Props`ではなく`FormErrors`)から
+再利用するようにした。これにより`pages/Profile`から`ProfileProps`と
+`ProfileFormErrors`の両方が生成され、見た目にも対になっている。名前
+空間はProps型と同じ`'Props'`のままとした(別の名前空間は設けていない)
+— 両者は常にページ単位でペアとして出力されるためである。名前空間自体
+の選択と同じく「暫定であり確定ではない」という留保が付く(§24、§7.4)。
+
+**検証**: `tools/dev-build.ps1`でリビルドし、`tools/run-tests.ps1
+-UpdateSnapshots`で`InertiaMode`フィクスチャのスナップショットを再生成
+した上で、それを鵜呑みにせず実際の差分を目視確認した
+(`git diff -- tests/fixtures/InertiaMode/expected/`) —
+一括再生成の影響で他の全フィクスチャは内容が変わっていない(バイト
+同一)ことと、複数フィールドのケース(`ProfileFormErrors`)とフィールド
+数ゼロのケース(`EmptyFormErrors`)の両方が正しくレンダリングされている
+ことを確認した。その後フルスイートを再実行: 14/14がパス。

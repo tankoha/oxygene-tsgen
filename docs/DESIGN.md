@@ -274,13 +274,20 @@ assembled, not how individual member types are mapped.
    (`type PageProps<T> = SharedData & T`), rather than duplicating the shared
    fields into every page interface — this avoids drift if the shared payload
    changes.
-3. **Form/`useForm()` error types** — Inertia's client-side `useForm()` hook
-   expects a field-name → error-message shape for validation errors. This reuses
-   the existing validation-attribute reflection from §5 (`[Required]`,
-   `[StringLength]`, etc.) that was already designed for zod/io-ts schema
-   generation (§5.3); the new piece is only the *shape* emitted (a
-   `Partial<Record<keyof FormValues, string>>`-style type) rather than a runtime
-   schema. See §5.4.
+3. **Form/`useForm()` error types — Implemented 2026-08-07, see `HANDOFF.md`
+   §26.** Inertia's client-side `useForm()` hook expects a field-name →
+   error-message shape for validation errors. The originally-planned design
+   (reusing validation-attribute reflection from §5, `[Required]`/
+   `[StringLength]`/etc.) was **not** what got built: that would require a new
+   entry-point-discovery mechanism to find and correlate a page's POST-handling
+   action back to the page itself, a materially larger feature. The
+   implemented v1 instead reuses the *same field-name list already resolved
+   for the page's own Props type* (item 1, above) — zero new scanning, at the
+   cost of the error-shape's keys being "whatever the page's Props are," not
+   "whatever a request DTO's validated fields are." A deliberate, revisitable
+   v1 scope choice (`HANDOFF.md` §26), not the design originally described
+   here. Emits `Partial<Record<'field1' | 'field2' | ..., string>>` (or
+   `Partial<Record<never, string>>` for a props-less page). See §5.4.
 
 None of this changes the `TsTypeExpression` shape (§2.1) or the priority-chain
 resolution mechanism (§2.2) — it only adds new *entry points* that decide which
@@ -710,21 +717,34 @@ adding Provider 3 possible without touching the IR shape at all.
 
 ### 5.4 Validation Attributes → Inertia Form Error Shape
 
-The `useForm()`-oriented type target introduced in §2.6 (item 3) reuses the same
+**Implemented 2026-08-07, but not as originally planned below — see
+`HANDOFF.md` §26.** This section originally proposed that the
+`useForm()`-oriented type target from §2.6 (item 3) would reuse the
 `System.ComponentModel.DataAnnotations.*` reflection already designed for
-zod/io-ts schema generation in §5.3 — no new attribute-reading logic is required.
-What's new is only the shape emitted: instead of (or alongside) a
-runtime-validated zod schema, a plain TypeScript type of the form
-`Partial<Record<'field1' | 'field2' | ..., string>>` is generated (field names
-sourced from the same POCO/anonymous-type member discovery used for the
-corresponding Page Props type, §2.6 item 1), intended for use as the generic
-parameter of Inertia's client-side `useForm<TFormErrors>()`-equivalent hook.
+zod/io-ts schema generation in §5.3, with field names sourced from
+validated request-DTO attributes. That was never built: doing so needs a
+new entry-point-discovery mechanism (finding a page's POST-handling
+action and correlating it back to the page), which is a materially
+larger feature than what got shipped as v1.
 
-Because the concrete shape of this generic parameter is adapter- and
-frontend-framework-specific (§11 open questions on adapter/framework choice), the
-exact TypeScript signature this target should produce (a bare `Record<...>` type
-vs. something more specific to a chosen Inertia React/Vue/Svelte adapter's
-typings) is left open until those choices are made.
+**What was actually built**: field names are sourced from the *same*
+field list already resolved for the page's own Props type (§2.6 item
+1) — no `DataAnnotations` reflection at all, no new scanning. The output
+shape (`Partial<Record<'field1' | 'field2' | ..., string>>`, or
+`Partial<Record<never, string>>` for a props-less page) matches what was
+originally proposed here; only the source of the field names differs. A
+deliberate v1 scope choice (`HANDOFF.md` §26), explicitly revisitable
+once Shared Data types or a real request-DTO scan exist and a natural
+page↔action correlation mechanism is available. Intended for use as the
+generic parameter of Inertia's client-side
+`useForm<TFormErrors>()`-equivalent hook.
+
+The adapter-/framework-specific signature question this paragraph originally
+left open was resolved pragmatically for v1, not by picking an adapter: the
+bare `Partial<Record<...>>` form was shipped since it's adapter-agnostic and
+needs no framework choice to be made first. Whether a chosen Inertia React/
+Vue/Svelte adapter's own typings would want something more specific remains
+open, but is no longer blocking — the bare form works with any of them.
 
 ---
 

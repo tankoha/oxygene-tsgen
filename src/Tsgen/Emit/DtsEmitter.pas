@@ -70,6 +70,26 @@ type
           aSb.AppendLine(aPad + 'export type ' + aType.Name + ' = ' + namesSb.ToString() + ';');
         end;
       end
+      else if aType.Kind = IrTypeKindLite.FormErrorsLike then begin
+        {
+          docs/DESIGN.md §5.4: field names only, sourced from the same
+          Members list already assembled for the paired Props type (see
+          InertiaIrBuilder.Build) -- member types/nullability are ignored
+          here, only Name is read. An empty field list (a legitimate
+          props-less page, see InertiaScanner.pas) can't produce a valid
+          union of zero string literals, so it falls back to `never`
+          (`Partial<Record<never, string>>` is valid TS for "no keys").
+        }
+        var keysSb := new StringBuilder;
+        if aType.Members.Count = 0 then
+          keysSb.Append('never')
+        else
+          for i: Int32 := 0 to aType.Members.Count - 1 do begin
+            if i > 0 then keysSb.Append(' | ');
+            keysSb.Append('''' + aType.Members[i].Name + '''');
+          end;
+        aSb.AppendLine(aPad + 'export type ' + aType.Name + ' = Partial<Record<' + keysSb.ToString() + ', string>>;');
+      end
       else begin
         aSb.AppendLine(aPad + 'export interface ' + aType.Name + ' {');
         for each m in aType.Members do begin
