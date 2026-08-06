@@ -91,8 +91,23 @@ type
       result := SanitizeComponentBaseName(aComponentName) + 'FormErrors';
     end;
 
+    class method MakeSimpleTypeRef(aFullName: String): RawTypeRef;
+    begin
+      result := new RawTypeRef;
+      result.FullName := aFullName;
+    end;
+
+    class method MakeStringToStringDictionaryTypeRef: RawTypeRef;
+    begin
+      result := new RawTypeRef;
+      result.FullName := 'System.Collections.Generic.Dictionary`2';
+      result.TypeArguments.Add(MakeSimpleTypeRef('System.String'));
+      result.TypeArguments.Add(MakeSimpleTypeRef('System.String'));
+    end;
+
   public
-    class method Build(aRaw: RawAssembly; aPages: List<InertiaPageProps>; aNullability: Dictionary<String, NullabilityKind>): IrAssemblyLite;
+    class method Build(aRaw: RawAssembly; aPages: List<InertiaPageProps>; aSharedData: InertiaSharedData;
+                        aNullability: Dictionary<String, NullabilityKind>): IrAssemblyLite;
     begin
       result := new IrAssemblyLite;
       var providers := IrBuilder.BuildProviders(aNullability);
@@ -107,6 +122,8 @@ type
       for each page in aPages do
         for each field in page.Fields do
           CollectReferencedTypes(field.TypeRef, byFullName, reachable, queue);
+      for each field in aSharedData.Fields do
+        CollectReferencedTypes(field.TypeRef, byFullName, reachable, queue);
 
       while queue.Count > 0 do begin
         var fullName := queue.Dequeue();
@@ -125,6 +142,53 @@ type
       for each rt in aRaw.Types do
         if reachable.Contains(rt.FullName) then
           result.Types.Add(IrBuilder.BuildType(rt, providers));
+
+      {
+        docs/DESIGN.md §2.6 item 2 / §8.2 (spiked before implementation,
+        see HANDOFF.md §27): "flash"/"timestamp"/"errors" are injected
+        into every page's payload by InertiaNetCore's own
+        Response.GetFinalProps regardless of whether the app registers
+        any AddInertiaSharedData(...) middleware -- confirmed against
+        InertiaNetCore's own source in the spike, not assumed. Always
+        emitted for this reason, never gated behind whether a
+        registration was actually found. User-registered fields
+        (aSharedData.Fields, populated only from AddInertiaSharedData(...)
+        call sites -- a bare Inertia.Share(...) call is deliberately NOT
+        classified as shared data, see InertiaScanner.ParseShareCallExcluded)
+        are appended after the three framework-injected ones.
+      }
+      var sharedType := new IrTypeLite;
+      sharedType.NamespaceName := 'Props';
+      sharedType.Name := 'SharedData';
+      sharedType.Kind := IrTypeKindLite.ClassLike;
+
+      var flashMember := new IrMemberLite;
+      flashMember.Name := 'flash';
+      flashMember.TypeRef := MakeStringToStringDictionaryTypeRef();
+      flashMember.Nullability := NullabilityKind.IsNotNullable;
+      sharedType.Members.Add(flashMember);
+
+      var timestampMember := new IrMemberLite;
+      timestampMember.Name := 'timestamp';
+      timestampMember.TypeRef := MakeSimpleTypeRef('System.DateTime');
+      timestampMember.Nullability := NullabilityKind.IsNotNullable;
+      sharedType.Members.Add(timestampMember);
+
+      var errorsMember := new IrMemberLite;
+      errorsMember.Name := 'errors';
+      errorsMember.TypeRef := MakeStringToStringDictionaryTypeRef();
+      errorsMember.Nullability := NullabilityKind.IsNotNullable;
+      sharedType.Members.Add(errorsMember);
+
+      for each field in aSharedData.Fields do begin
+        var sm := new IrMemberLite;
+        sm.Name := field.Name;
+        sm.TypeRef := field.TypeRef;
+        sm.Nullability := NullabilityProviderChain.Resolve(providers, '', field.Name, field.TypeRef);
+        sharedType.Members.Add(sm);
+      end;
+
+      result.Types.Add(sharedType);
 
       {
         Synthesized Props interfaces have no real reflected member to
@@ -151,6 +215,14 @@ type
         propsType.NamespaceName := 'Props';
         propsType.Name := SanitizePropsTypeName(page.ComponentName);
         propsType.Kind := IrTypeKindLite.ClassLike;
+        {
+          Fully qualified even though SharedData lives in the same
+          "Props" namespace, matching TypeMapper's own "always fully
+          namespace-qualified" convention for cross-references (see its
+          doc comment) rather than special-casing "same namespace as the
+          reference site".
+        }
+        propsType.BaseTypeNames.Add('Props.SharedData');
 
         for each field in page.Fields do begin
           var im := new IrMemberLite;

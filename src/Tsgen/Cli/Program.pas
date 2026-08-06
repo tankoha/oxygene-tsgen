@@ -109,9 +109,11 @@ type
       var ir: IrAssemblyLite;
       if inertiaMode then begin
         writeLn('Scanning source for Inertia.Render call sites: ' + sourceDir);
-        var pages := InertiaScanner.Scan(sourceDir, raw, diagnostics);
-        writeLn('Found ' + pages.Count.ToString() + ' Inertia.Render call site(s).');
-        ir := InertiaIrBuilder.Build(raw, pages, nullability);
+        var sharedData := new InertiaSharedData;
+        var pages := InertiaScanner.Scan(sourceDir, raw, diagnostics, sharedData);
+        writeLn('Found ' + pages.Count.ToString() + ' Inertia.Render call site(s) and ' +
+                sharedData.Fields.Count.ToString() + ' shared-data field(s).');
+        ir := InertiaIrBuilder.Build(raw, pages, sharedData, nullability);
       end
       else
         ir := IrBuilder.Build(raw, nullability);

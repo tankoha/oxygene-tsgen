@@ -2744,3 +2744,185 @@ namespace choice itself (§24, §7.4).
 after the blanket regeneration) and that both the multi-field
 (`ProfileFormErrors`) and zero-field (`EmptyFormErrors`) cases render
 correctly. Full suite re-run afterward: 14/14 pass.
+
+## 27. Shared Data type implemented (docs/DESIGN.md §2.6 item 2 / §7.1 / §8.2, 2026-08-07)
+
+This is the last of §2.6's three Inertia-specific type-generation targets
+(Page Props §24, Form/`useForm()` errors §26, now Shared Data) —
+`--mode inertia` no longer has any target left unimplemented from that
+list.
+
+**A spike came first, deliberately, run on a different model.** §8.2
+already named the open problem: Shared Data must be discovered from "the
+ASP.NET Core Inertia middleware's `share()`-equivalent registration," but
+*how* to reliably locate it "is itself unresolved and depends on which
+adapter is chosen." Since the adapter (InertiaNetCore) was already fixed
+(§11 item 6) but its actual Share API had never been looked up, this
+carried real "dependency optimism" risk (the self-audit category from
+§25.1) if implementation started from assumption. A background Opus 5
+agent was launched (Sonnet 5 stayed the primary model for this
+conversation, per `CLAUDE.md`'s model-selection guidance recommending
+Opus for algorithmically/API-research-hard cores) with instructions to
+research InertiaNetCore's real Share API via WebSearch/WebFetch against
+its actual GitHub source and NuGet package, build a hands-on Oxygene
+probe verifying detectability via `TokenStream` (the same standard §22.4
+held itself to), and report back — not to implement anything. Its full
+report is reproduced in this session's history; only the load-bearing
+conclusions are repeated here.
+
+**What the spike found, verified against InertiaNetCore's own source
+(not assumed from Laravel/Rails Inertia conventions)**:
+- The real API is `Inertia.Share(key, value)`, `Inertia.Share(props)`,
+  and `AddInertiaSharedData(Func<HttpContext, InertiaProps>)` /
+  `AddInertiaSharedData(Func<HttpContext, Task<InertiaProps>>)` — no
+  interface, attribute, or DI-registered type exists for reflection to
+  find; source-level scanning is the only path, same conclusion as Page
+  Props (§22.5).
+- `AddInertiaSharedData` is startup-time pipeline middleware
+  registration (`app.Use(...)` under the hood) — a fixed, scannable call
+  shape. A bare `Inertia.Share(key, value)` call, though, is used by
+  InertiaNetCore for BOTH app-global shared data AND a single page's own
+  extra prop — the call shape alone cannot distinguish the two. This is
+  a materially harder classification problem than anything Page Props
+  faced, where `Inertia.Render` is unambiguous by construction.
+- Three keys (`flash`, `timestamp`, `errors`) are injected into every
+  page's payload by InertiaNetCore's own `Response.GetFinalProps`
+  regardless of whether the app registers any shared data at all.
+- The probe confirmed all of this is token-detectable with **zero new
+  token IDs** beyond what `InertiaScanner.pas` already declares — the
+  lambda passed to `AddInertiaSharedData` is just another nested
+  `begin...end` block one level deeper inside a method body, which the
+  existing `depth`/`methodBodyDepth` bookkeeping already handles
+  correctly.
+- The `{ }`-initializer trap (§22.3) recurs here in a worse form: writing
+  InertiaNetCore's own README-style `AddInertiaSharedData(ctx ->
+  new InertiaProps { ['key'] := value })` compiles and silently empties
+  the shared payload for the ENTIRE app, not just one page's props.
+
+**Scope decisions made from the spike's open-questions list, asked of
+the user before implementing (not decided silently — matching this
+project's standing practice)**:
+- **Classification policy**: conservative v1 — only
+  `AddInertiaSharedData(...)` registrations count as shared data. A bare
+  `Inertia.Share(...)` call is detected but excluded, with a diagnostic
+  naming it, rather than guessed at via a "no `Inertia.Render` in the
+  same method" heuristic (the spike's alternative option), which would
+  catch more real patterns but risks misclassifying a page's own prop as
+  global. The user asked to keep this switchable later via a CLI flag —
+  noted here as a real, deliberately-deferred follow-up, not implemented
+  this round (no flag exists yet; `ParseShareCallExcluded` is the single
+  place that would need to branch on one).
+- **Framework floor keys**: always emit `flash`/`timestamp`/`errors` in
+  `SharedData`, regardless of whether any registration was found —
+  matches actual runtime behavior. Same "make it a flag later" follow-up
+  noted, not built yet.
+- **Merge representation**: `interface XxxProps extends Props.SharedData`
+  (an inheritance clause), not the literal `type XxxProps = SharedData &
+  T` intersection §2.6/§8.2/§7.1 originally described. Chosen because it
+  needed no new `IrTypeKindLite` value or emitter branch (`IrTypeLite`
+  just grew a `BaseTypeNames: List<String>`, and `DtsEmitter.EmitType`
+  appends `' extends ' + ...` to the existing interface-header line), and
+  because on a field-name collision `extends` is a TypeScript **compile
+  error** rather than the intersection form's silent collapse to `never`
+  — arguably more honest given shared data actually **overwrites**
+  same-named page props at runtime in InertiaNetCore
+  (`InertiaProps.Merge`, confirmed in the spike). `docs/DESIGN.md`
+  §2.6/§7.1/§8.2 need a follow-up edit to describe this instead of the
+  original intersection-type sketch (not done in this pass — flagging
+  it here first, per this project's practice of writing the finding down
+  before editing the design doc it corrects).
+- **camelCase key/property-naming gap**: the spike also surfaced,
+  incidentally, that InertiaNetCore's default `JsonSerializerOptions`
+  camelCases both dictionary keys and POCO property names, so this
+  tool's existing output (`User`, `IsAdmin`, etc., verbatim from Oxygene
+  source casing) doesn't match what a default-configured app actually
+  sends. This is a **pre-existing bug in the already-shipped Page Props
+  feature** (§24), not something Shared Data introduces, and out of
+  scope for this section's diff. The user asked for it to be tracked as
+  a separate issue rather than fixed here — see the issue-tracker CSV
+  row for this session's phase.
+
+**Implementation** (`src/Tsgen/Inertia/InertiaScanner.pas`,
+`InertiaIrBuilder.pas`, `src/Tsgen/Ir/IrModel.pas`,
+`src/Tsgen/Emit/DtsEmitter.pas`, `src/Tsgen/Cli/Program.pas`):
+- New `InertiaSharedData` class (`Fields: List<InertiaPropsField>`),
+  deliberately mirroring `InertiaPageProps`'s shape so
+  `InertiaIrBuilder` can convert both kinds of field list through the
+  exact same per-field IR-conversion code.
+- `ScanFile` gains three pieces of state — `sharedRegionActive`,
+  `sharedRegionEntryParenDepth`, `sharedRegionKnownVars` — to track an
+  active `AddInertiaSharedData(...)` call's argument span. On detecting
+  `IDENT . AddInertiaSharedData (` (the `.`-prefix guard avoids matching
+  a bare declaration, cheap insurance found worth adding during the
+  spike's own probe), it snapshots which props vars already exist; on
+  the matching `)` (parenDepth returning to the value it had right
+  before the call's own `(`), it diffs `propsFields.Keys` and adds every
+  *newly*-declared props var's fields to `aSharedData.Fields`. This
+  deliberately does NOT parse the lambda's `exit ...;` statement to find
+  which var is returned — every registration shape the spike's probe
+  confirmed compiles declares its own props var inline and returns it
+  directly, so "new var declared inside the region" and "the var actually
+  returned" coincide for every case tested. A var declared *outside* the
+  call and merely referenced inside it would be missed by this heuristic
+  — an accepted v1 gap, same style as the existing "props built across
+  multiple methods" gap for Page Props (§24.6).
+- A parallel `Inertia . Share (` detection (`ParseShareCallExcluded`)
+  warns and skips to the matching `)` without attempting to resolve
+  anything — the conservative-policy decision above needs no key/value
+  parsing at all for the excluded path.
+- **Known interaction not defended against**: `ParseShareCallExcluded`
+  and `ParseRenderCall`'s own skip-loops consume tokens (including their
+  own parens) without updating `ScanFile`'s outer `parenDepth` counter —
+  harmless before this feature (nothing read `parenDepth` outside its own
+  increment/decrement), but now that shared-region-close detection
+  compares against a saved `parenDepth` value, an `Inertia.Share(...)` or
+  `Inertia.Render(...)` call occurring *inside* an
+  `AddInertiaSharedData(...)` registration's lambda body could throw off
+  the region-close match. Judged unlikely enough in real code (why would
+  a shared-data registration itself render a page or share a single
+  prop) not to defend against this round; flagging the reasoning here
+  rather than silently ignoring it.
+- `IrTypeLite` gains `BaseTypeNames: List<String>` (default empty,
+  meaningful only for `ClassLike`); `DtsEmitter.EmitType` appends
+  `' extends ' + ...` to the interface header when non-empty.
+- `InertiaIrBuilder.Build` now takes an `aSharedData: InertiaSharedData`
+  parameter, hand-constructs `RawTypeRef`s for the three floor keys
+  (`System.DateTime` for `timestamp`; a hand-built
+  `System.Collections.Generic.Dictionary\`2` of `String,String` for
+  `flash`/`errors` — `TypeMapper.MapTypeRef` already renders that as
+  `Record<string, string>`, confirmed by reading `TypeMapper.pas`, not
+  assumed), builds one `SharedData` `IrTypeLite` in the `'Props'`
+  namespace (same placeholder-namespace caveat as Props/FormErrors,
+  §24/§7.4), and adds `'Props.SharedData'` (fully qualified, matching
+  `TypeMapper`'s own "always fully qualify" convention even though
+  same-namespace) to every page's `BaseTypeNames`. The reachability BFS
+  that decides which of the target assembly's own types get emitted was
+  seeded with `aSharedData.Fields`' types too, not just each page's own
+  fields — otherwise a shared field's own type (e.g. `Auth:
+  AuthUserDto`) would fall to `unknown` instead of being emitted and
+  referenced.
+- `Program.pas`: creates one `InertiaSharedData` before scanning,
+  threads it through `InertiaScanner.Scan` (now takes it as an in/out
+  accumulator parameter, same pattern as the existing `aResult:
+  List<InertiaPageProps>` parameter — no `out` keyword needed since it's
+  a reference type) and into `InertiaIrBuilder.Build`.
+
+**Fixture**: extended `tests/fixtures/InertiaMode/InertiaMode.pas` rather
+than adding a new fixture, since Shared Data only makes sense evaluated
+together with existing pages. Added: `HttpContext`/`AppBuilder` stand-ins
+(a plain method, not an `extension class(IApplicationBuilder)` — the
+scanner only cares about the call shape `IDENT . AddInertiaSharedData
+(`, not how the method was declared, so a plain method sidesteps needing
+to get Oxygene's extension-class syntax exactly right for something the
+scanner doesn't inspect anyway), a `SharedUserDto` reachable ONLY via the
+shared-data registration (proving the reachability-seeding fix above), a
+`Startup.Configure` method registering shared data via the exact
+statement-lambda-with-`exit` shape the spike's probe confirmed compiles,
+and an `Inertia.Share(...)` call added to the existing `Empty` page
+method (proving the exclusion path without needing a whole new method).
+Rebuilt, ran the full suite to see the actual diff before regenerating
+anything, then regenerated snapshots and read the resulting `.d.ts` by
+eye (both `default.d.ts` and `non-null.d.ts`) to confirm `SharedData`,
+the `extends` clauses, and `SharedUserDto`'s presence in the `InertiaMode`
+namespace are all syntactically valid, sensible TypeScript — not just
+"the diff updated." Full suite: 14/14 pass.

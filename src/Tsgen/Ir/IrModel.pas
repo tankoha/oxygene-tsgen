@@ -51,6 +51,15 @@ type
     Kind: IrTypeKindLite;
     Members: List<IrMemberLite> := new List<IrMemberLite>;
     EnumValues: List<IrEnumValueLite> := new List<IrEnumValueLite>;
+    {
+      Only meaningful for ClassLike -- fully-qualified names (e.g.
+      "Props.SharedData") this interface should `extends`. Empty for
+      every existing type; introduced for the Inertia Shared Data
+      feature so each page's Props interface can extend a shared
+      "SharedData" interface instead of duplicating its members
+      (docs/DESIGN.md §2.6 item 2, HANDOFF.md §27).
+    }
+    BaseTypeNames: List<String> := new List<String>;
   end;
 
   IrAssemblyLite = public class

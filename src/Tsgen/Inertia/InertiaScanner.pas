@@ -23,6 +23,20 @@ type
   end;
 
   {
+    Accumulates fields registered via `app.AddInertiaSharedData(ctx ->
+    ...)` across every scanned file -- the InertiaNetCore middleware
+    registration that injects data into every page (docs/DESIGN.md §2.6
+    item 2/§8.2, spiked before implementation; see HANDOFF.md §27).
+    Mirrors InertiaPageProps deliberately: same Fields shape, so
+    InertiaIrBuilder can reuse the exact same per-field IR conversion
+    for both.
+  }
+  InertiaSharedData = public class
+  public
+    Fields: List<InertiaPropsField> := new List<InertiaPropsField>;
+  end;
+
+  {
     Source-level scanner for entry-point-driven type discovery
     (docs/DESIGN.md §3.5, spiked in HANDOFF.md §22, implemented here per
     §24). Finds `Inertia.Render(componentName, propsVar)` call sites and
@@ -396,7 +410,31 @@ type
       result := i;
     end;
 
-    class method ScanFile(aTokens: List<ScanToken>; aKnownTypes: Dictionary<String, RawTypeRef>; aResult: List<InertiaPageProps>; aDiagnostics: DiagnosticList);
+    {
+      Parses `Inertia . Share ( ... ) ;` starting at "Inertia", for
+      diagnostic purposes only -- v1 deliberately does NOT classify a
+      bare Inertia.Share(...) call as shared data (HANDOFF.md §27's scope
+      decision: unlike AddInertiaSharedData(...), a Share call's call
+      shape alone can't distinguish "this is app-global shared data" from
+      "this adds one prop to the current page", since InertiaNetCore uses
+      the same API for both). Just warns and skips to the matching ')'.
+      Returns the index to resume scanning from.
+    }
+    class method ParseShareCallExcluded(aTokens: List<ScanToken>; aInertiaIdx: Int32; aDiagnostics: DiagnosticList): Int32;
+    begin
+      aDiagnostics.AddWarning('found an Inertia.Share(...) call -- not included in the generated SharedData type under the current policy (only AddInertiaSharedData(...) middleware registrations are treated as shared data); see HANDOFF.md §27');
+      var i := aInertiaIdx + 4; // past "Inertia" "." "Share" "("
+      var depth := 1;
+      while (i < aTokens.Count) and (depth > 0) do begin
+        if aTokens[i].Id = TOK_OPENROUND then inc(depth)
+        else if aTokens[i].Id = TOK_CLOSEROUND then dec(depth);
+        inc(i);
+      end;
+      result := i;
+    end;
+
+    class method ScanFile(aTokens: List<ScanToken>; aKnownTypes: Dictionary<String, RawTypeRef>; aResult: List<InertiaPageProps>;
+                           aSharedData: InertiaSharedData; aDiagnostics: DiagnosticList);
     begin
       var depth: Int32 := 0;
       var parenDepth: Int32 := 0;
@@ -405,6 +443,25 @@ type
       var paramTypes := new Dictionary<String, RawTypeRef>;
       var localTypes := new Dictionary<String, RawTypeRef>;
       var propsFields := new Dictionary<String, List<InertiaPropsField>>;
+
+      {
+        Tracks an active `app.AddInertiaSharedData(ctx -> ...)` call's
+        argument-list span (HANDOFF.md §27): sharedRegionEntryParenDepth
+        is parenDepth's value right BEFORE the call's own "(" is
+        consumed, so the matching ")" is the first TOK_CLOSEROUND that
+        brings parenDepth back down to it. sharedRegionKnownVars snapshots
+        which props vars already existed at that point, so any props var
+        that gets declared (var IDENT := new InertiaProps; ...) *inside*
+        the lambda body is recognized as new when the region closes --
+        deliberately a "new var inside the region" heuristic rather than
+        parsing the lambda's `exit ...;` statement, since every real
+        registration shape found in the spike declares its own props var
+        inline and returns it directly (no case needed a var declared
+        outside the call and merely referenced inside it).
+      }
+      var sharedRegionActive := false;
+      var sharedRegionEntryParenDepth: Int32 := 0;
+      var sharedRegionKnownVars: HashSet<String> := nil;
 
       var i: Int32 := 0;
       while i < aTokens.Count do begin
@@ -415,6 +472,8 @@ type
           localTypes := new Dictionary<String, RawTypeRef>;
           propsFields := new Dictionary<String, List<InertiaPropsField>>;
           inMethodBody := false;
+          sharedRegionActive := false;
+          sharedRegionKnownVars := nil;
           i := ParseMethodParams(aTokens, i, aKnownTypes, paramTypes);
           continue;
         end;
@@ -423,6 +482,18 @@ type
           inc(parenDepth)
         else if tok.Id = TOK_CLOSEROUND then begin
           if parenDepth > 0 then dec(parenDepth);
+          if sharedRegionActive and (parenDepth = sharedRegionEntryParenDepth) then begin
+            var addedCount: Int32 := 0;
+            for each key in propsFields.Keys do
+              if not sharedRegionKnownVars.Contains(key) then begin
+                aSharedData.Fields.AddRange(propsFields[key]);
+                addedCount := addedCount + propsFields[key].Count;
+              end;
+            if addedCount = 0 then
+              aDiagnostics.AddWarning('found an AddInertiaSharedData(...) registration that resolved 0 shared keys -- if you used a "{ [''key''] := value }" initializer, note that Oxygene has no working object/collection-initializer syntax and the "{ }" is silently consumed as a comment (see HANDOFF.md §22.3/§27)');
+            sharedRegionActive := false;
+            sharedRegionKnownVars := nil;
+          end;
         end
         else if tok.Id = TOK_BEGIN then begin
           inc(depth);
@@ -440,6 +511,8 @@ type
             paramTypes := new Dictionary<String, RawTypeRef>;
             localTypes := new Dictionary<String, RawTypeRef>;
             propsFields := new Dictionary<String, List<InertiaPropsField>>;
+            sharedRegionActive := false;
+            sharedRegionKnownVars := nil;
           end;
           if depth > 0 then dec(depth);
         end
@@ -457,6 +530,19 @@ type
                 and (aTokens[i + 3].Id = TOK_OPENROUND) then begin
           i := ParseRenderCall(aTokens, i, propsFields, aResult, aDiagnostics);
           continue;
+        end
+        else if inMethodBody and (tok.Id = TOK_IDENTIFIER) and (tok.Text = 'Inertia')
+                and (i + 3 < aTokens.Count) and (aTokens[i + 1].Id = TOK_DOT) and (aTokens[i + 2].Text = 'Share')
+                and (aTokens[i + 3].Id = TOK_OPENROUND) then begin
+          i := ParseShareCallExcluded(aTokens, i, aDiagnostics);
+          continue;
+        end
+        else if inMethodBody and (not sharedRegionActive) and (tok.Id = TOK_IDENTIFIER) and (tok.Text = 'AddInertiaSharedData')
+                and (i > 0) and (aTokens[i - 1].Id = TOK_DOT)
+                and (i + 1 < aTokens.Count) and (aTokens[i + 1].Id = TOK_OPENROUND) then begin
+          sharedRegionActive := true;
+          sharedRegionEntryParenDepth := parenDepth;
+          sharedRegionKnownVars := new HashSet<String>(propsFields.Keys);
         end;
 
         inc(i);
@@ -464,7 +550,16 @@ type
     end;
 
   public
-    class method Scan(aSourceDir: String; aRaw: RawAssembly; aDiagnostics: DiagnosticList): List<InertiaPageProps>;
+    {
+      aSharedData is an in/out accumulator (like aResult): caller passes
+      an empty InertiaSharedData, this fills in its Fields from every
+      AddInertiaSharedData(...) registration found across every scanned
+      file (HANDOFF.md §27) -- not just the file containing it, since
+      InertiaNetCore's registration is app-startup configuration that can
+      live in any source file, not a fixed conventional one (confirmed in
+      the spike report this implementation is based on).
+    }
+    class method Scan(aSourceDir: String; aRaw: RawAssembly; aDiagnostics: DiagnosticList; aSharedData: InertiaSharedData): List<InertiaPageProps>;
     begin
       result := new List<InertiaPageProps>;
       if not Directory.Exists(aSourceDir) then exit;
@@ -476,7 +571,7 @@ type
       for each filePath in Directory.GetFiles(aSourceDir, '*.pas', SearchOption.AllDirectories) do begin
         var text := File.ReadAllText(filePath);
         var tokens := OxygeneTokenizer.Tokenize(text);
-        ScanFile(tokens, knownTypes, result, aDiagnostics);
+        ScanFile(tokens, knownTypes, result, aSharedData, aDiagnostics);
       end;
     end;
   end;

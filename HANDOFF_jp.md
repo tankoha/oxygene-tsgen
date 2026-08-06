@@ -2700,3 +2700,189 @@ DTOスキャンが実装され、自然な対応付けの仕組みが存在す�
 同一)ことと、複数フィールドのケース(`ProfileFormErrors`)とフィールド
 数ゼロのケース(`EmptyFormErrors`)の両方が正しくレンダリングされている
 ことを確認した。その後フルスイートを再実行: 14/14がパス。
+
+## 27. Shared Data型の実装(docs/DESIGN.md §2.6 item 2 / §7.1 / §8.2、2026-08-07)
+
+§2.6の3つのInertia固有生成対象(Page Props §24、Form/`useForm()`エラー
+§26、そして今回のShared Data)のうち、これで最後の1つが実装された —
+`--mode inertia`はこのリストにおいて未実装の対象を持たなくなった。
+
+**意図的に、まず別モデルによるスパイクを先行させた。** §8.2は既に
+未解決の問題を明記していた: Shared Dataは「ASP.NET CoreのInertiaミドル
+ウェアの`share()`相当の登録」から発見される必要があるが、それを
+「どう確実に見つけるかはそれ自体未解決であり、どのアダプタを選ぶかに
+依存する」。アダプタ(InertiaNetCore)は既に確定していた(§11 item 6)が、
+その実際のShare APIは一度も調べられていなかったため、実装をいきなり
+仮定から始めると「依存関係の楽観性」(§25.1の自己監査カテゴリ)の
+リスクが実質的にあった。バックグラウンドでOpus 5エージェントを起動し
+(この会話自体のプライマリモデルはSonnet 5のまま — `CLAUDE.md`の
+モデル選定方針が、アルゴリズム的/API調査的に難しいコアにはOpusを
+推奨していることに沿う)、InertiaNetCoreの実際のShare APIを実際のGitHub
+ソースとNuGetパッケージに対してWebSearch/WebFetchで調査し、実機で
+Oxygeneプローブを組んで`TokenStream`による検出可能性を検証する(§22.4
+が自らに課したのと同じ基準)よう指示した — 何かを実装させたのではなく、
+報告させることが目的だった。その完全なレポートはこのセッションの
+履歴に残っているため、ここでは実装の土台となった結論のみを繰り返す。
+
+**スパイクがInertiaNetCore自身のソースに対して確認した内容(Laravel/
+Railsなど他のInertiaアダプタの慣習からの類推ではない)**:
+- 実際のAPIは`Inertia.Share(key, value)`、`Inertia.Share(props)`、
+  `AddInertiaSharedData(Func<HttpContext, InertiaProps>)` /
+  `AddInertiaSharedData(Func<HttpContext, Task<InertiaProps>>)`である
+  — reflectionで見つけられるinterfaceも属性もDI登録される型も存在せず、
+  ソースレベルのスキャンだけが唯一の道である。これはPage Propsと同じ
+  結論(§22.5)。
+- `AddInertiaSharedData`はアプリ起動時のパイプラインミドルウェア登録
+  (内部的には`app.Use(...)`)であり、固定的でスキャン可能な呼び出し
+  形状を持つ。一方、単体の`Inertia.Share(key, value)`呼び出しは、
+  InertiaNetCoreではアプリ全体の共有データと、単一ページ固有の追加
+  propの両方に使われる — 呼び出し形状だけでは両者を区別できない。
+  これは`Inertia.Render`が構造上一意に定まるPage Propsよりも本質的に
+  難しい分類問題である。
+- `flash`/`timestamp`/`errors`の3キーは、アプリが共有データを一切
+  登録していなくても、InertiaNetCore自身の`Response.GetFinalProps`
+  によって全ページのペイロードに注入される。
+- プローブにより、これら全てが`InertiaScanner.pas`が既に宣言している
+  トークン定数だけで、**新しいトークンIDを1つも追加せずに**検出可能
+  であることが確認された — `AddInertiaSharedData`に渡すラムダは、
+  メソッド本体内でもう1段深い、単なるネストした`begin...end`ブロック
+  に過ぎず、既存の`depth`/`methodBodyDepth`管理がそのまま正しく処理
+  する。
+- `{ }`初期化子の罠(§22.3)がここでもより深刻な形で再現する:
+  InertiaNetCore自身のREADME流に`AddInertiaSharedData(ctx ->
+  new InertiaProps { ['key'] := value })`と書くとコンパイルは通るが、
+  1ページ分のpropsではなく**アプリ全体**の共有ペイロードが黙って
+  空になる。
+
+**スパイクの未解決事項リストから、実装前にユーザーへ確認した上で
+決めたスコープ(黙って決めるのではなく、本プロジェクトの標準的な
+やり方通り)**:
+- **分類方針**: 保守的なv1方式 — `AddInertiaSharedData(...)`登録のみ
+  を共有データとして扱う。単体の`Inertia.Share(...)`呼び出しは検出は
+  するが除外し、それを名指しする診断メッセージを出す。スパイクが
+  挙げたもう一つの選択肢(「同じメソッド内に`Inertia.Render`がなければ
+  グローバル扱い」というヒューリスティック)は実際のパターンをより
+  多く捕捉できるが、ページ固有のpropsをグローバルと誤分類するリスクが
+  ある。ユーザーからは、これを将来的にCLIフラグで切り替え可能にする
+  ことを検討してほしいという要望があった — 今回の実装では作っておらず
+  (フラグはまだ存在しない)、意図的に先送りにした実際のフォローアップ
+  としてここに記録する。フラグを追加する場合、分岐が必要になる箇所は
+  `ParseShareCallExcluded`一箇所のみ。
+- **フレームワーク由来のフロアキー**: 登録の有無に関わらず、常に
+  `SharedData`に`flash`/`timestamp`/`errors`を出力する — 実際の
+  ランタイム挙動と一致させるため。こちらも「将来的にフラグにする」
+  というフォローアップが同様に記録されているが、今回は未実装。
+- **合成方法**: `interface XxxProps extends Props.SharedData`
+  (継承節)を採用し、§2.6/§8.2/§7.1が元々説明していた文字通りの
+  `type XxxProps = SharedData & T`交差型は採らなかった。理由は、
+  新しい`IrTypeKindLite`の値やEmitterの分岐を一切必要としないこと
+  (`IrTypeLite`に`BaseTypeNames: List<String>`が増えただけで、
+  `DtsEmitter.EmitType`は既存のinterfaceヘッダー行に`' extends '
+  + ...`を追加するだけで済む)、そしてフィールド名が衝突した場合、
+  `extends`は**コンパイルエラー**になる一方、交差型は黙って`never`
+  型に潰れてしまう点である。実際にInertiaNetCoreでは共有データが
+  同名のページpropsを実行時に**上書きする**ことがスパイクで確認
+  されている(`InertiaProps.Merge`)ため、これは黙って潰れるより
+  正直な挙動だと言える。`docs/DESIGN.md` §2.6/§7.1/§8.2は、元の
+  交差型のスケッチではなくこの方式を説明するよう追って修正が必要
+  である(今回のパスでは未実施 — 設計文書を修正する前に、まず
+  ここに発見内容を書き残すという本プロジェクトの慣習に従っている)。
+- **camelCase変換によるキー/プロパティ名のギャップ**: スパイクは
+  副次的に、InertiaNetCoreの既定`JsonSerializerOptions`が辞書キーと
+  POCOのプロパティ名の両方をcamelCase変換することも明らかにした。
+  そのため、このツールの既存出力(`User`、`IsAdmin`等、Oxygeneソース
+  の大文字小文字表記そのまま)は、既定設定のアプリが実際に送信する
+  ものと一致していない。これは**既に出荷済みのPage Props機能に
+  存在する既存バグ**であり(§24)、Shared Dataが持ち込んだものでは
+  なく、本節の差分の対象外である。ユーザーからは、ここで修正するの
+  ではなく別issueとして追跡してほしいという要望があった — このセッ
+  ションのフェーズに対応するissueトラッカーCSVの行を参照。
+
+**実装**(`src/Tsgen/Inertia/InertiaScanner.pas`、
+`InertiaIrBuilder.pas`、`src/Tsgen/Ir/IrModel.pas`、
+`src/Tsgen/Emit/DtsEmitter.pas`、`src/Tsgen/Cli/Program.pas`):
+- 新しい`InertiaSharedData`クラス(`Fields: List<InertiaPropsField>`)
+  — `InertiaPageProps`と意図的に同じ形にしてあり、`InertiaIrBuilder`
+  が両方のフィールドリストを全く同じフィールド単位のIR変換コードで
+  処理できるようにしている。
+- `ScanFile`に3つの状態(`sharedRegionActive`、
+  `sharedRegionEntryParenDepth`、`sharedRegionKnownVars`)を追加し、
+  アクティブな`AddInertiaSharedData(...)`呼び出しの引数リストの範囲を
+  追跡する。`IDENT . AddInertiaSharedData (`(`.`前置ガードは、宣言
+  そのものへの誤マッチを避けるためのもので、スパイク自身のプローブ
+  中に見つかった、安価な保険)を検出すると、その時点で既に存在する
+  propsの変数一覧をスナップショットする。対応する`)`(parenDepthが、
+  その呼び出し自身の`(`を消費する直前の値まで戻った時点)で
+  `propsFields.Keys`の差分を取り、*新しく*宣言されたprops変数の
+  フィールドを全て`aSharedData.Fields`に追加する。これはラムダの
+  `exit ...;`文を解析して「どの変数が返されたか」を特定する方式では
+  ない — スパイクのプローブがコンパイルを確認した登録パターンは
+  全て、自分専用のprops変数をその場で宣言してそのまま返しており、
+  「領域内で新しく宣言された変数」と「実際に返される変数」が全ての
+  検証済みケースで一致している。領域の外で宣言され、内部から参照
+  されるだけの変数はこのヒューリスティックでは拾えない — これは
+  Page Props向けの既存の「複数メソッドにまたがって構築されるprops」
+  の制約(§24.6)と同じ種類の、許容されたv1のギャップである。
+- 並行して`Inertia . Share (`の検出(`ParseShareCallExcluded`)を
+  追加し、何も解決しようとせず警告して対応する`)`までスキップする
+  — 上記の保守的な分類方針の決定により、除外パスにはキー/値の解析が
+  一切不要である。
+- **対策していない既知の相互作用**: `ParseShareCallExcluded`と
+  `ParseRenderCall`自身のスキップループは、自分自身の括弧を含む
+  トークンを`ScanFile`の外側の`parenDepth`カウンタを更新せずに
+  消費する — この機能が入る前は無害だった(`parenDepth`は自分自身の
+  増減以外どこからも読まれていなかったため)が、今回、共有領域の
+  終了検出が保存済みの`parenDepth`値と比較するようになったため、
+  `AddInertiaSharedData(...)`登録のラムダ本体の**内側**で
+  `Inertia.Share(...)`や`Inertia.Render(...)`が呼ばれると、領域終了
+  の一致判定が狂う可能性がある。実際のコードでこれが起きるとは
+  考えにくい(共有データの登録処理自体がページをレンダリングしたり
+  単体のpropを共有したりする理由がない)と判断し、今回は対策しない
+  ことにした — 黙って無視するのではなく、その判断の理由をここに
+  記録する。
+- `IrTypeLite`に`BaseTypeNames: List<String>`(既定は空。意味を持つ
+  のは`ClassLike`のみ)を追加。`DtsEmitter.EmitType`は、これが空
+  でない場合、interfaceヘッダーに`' extends ' + ...`を追加する。
+- `InertiaIrBuilder.Build`は新たに`aSharedData: InertiaSharedData`
+  パラメータを受け取り、3つのフロアキー用の`RawTypeRef`を手組みで
+  構築し(`timestamp`用に`System.DateTime`、`flash`/`errors`用に
+  `String,String`の`System.Collections.Generic.Dictionary\`2`を
+  手組み — `TypeMapper.MapTypeRef`がこれを`Record<string, string>`
+  としてレンダリングすることは`TypeMapper.pas`を実際に読んで確認
+  済みであり、仮定ではない)、`'Props'`名前空間に`SharedData`という
+  `IrTypeLite`を1つ構築し(Props/FormErrorsと同じ「暫定的な名前空間」
+  という留保、§24/§7.4)、各ページの`BaseTypeNames`に
+  `'Props.SharedData'`(同じ名前空間内であっても、`TypeMapper`自身の
+  「常に完全修飾する」という慣習に合わせて完全修飾)を追加する。
+  どのアセンブリ自身の型を出力対象に含めるかを決める到達可能性BFSは、
+  各ページ自身のフィールドだけでなく`aSharedData.Fields`の型からも
+  シードするようにした — そうしないと、共有フィールドの型
+  (例: `Auth: AuthUserDto`)が出力・参照されず、`unknown`に落ちて
+  しまう。
+- `Program.pas`: スキャン前に`InertiaSharedData`を1つ生成し、
+  `InertiaScanner.Scan`(既存の`aResult: List<InertiaPageProps>`
+  パラメータと同じパターンのin/outアキュムレータとして受け取る —
+  参照型なので`out`キーワードは不要)経由で流し込み、
+  `InertiaIrBuilder.Build`にも渡す。
+
+**フィクスチャ**: 新規フィクスチャを追加するのではなく
+`tests/fixtures/InertiaMode/InertiaMode.pas`を拡張した — Shared Data
+は既存のページと組み合わせて評価してこそ意味があるため。追加した
+もの: `HttpContext`/`AppBuilder`のスタンドイン(`extension
+class(IApplicationBuilder)`ではなく通常のメソッドとした —
+スキャナが気にするのは呼び出し形状`IDENT . AddInertiaSharedData (`
+だけであり、メソッドがどう宣言されたかではないため、通常のメソッド
+にすることで、スキャナがそもそも検査しない部分についてOxygeneの
+extension class構文を正確に再現する必要を回避できる)、共有データの
+登録経由でのみ到達可能な`SharedUserDto`(上記の到達可能性シード修正
+を実証する)、スパイクのプローブが実際にコンパイルを確認した、
+`exit`付きの文ボディ形式のラムダそのものの形で共有データを登録する
+`Startup.Configure`メソッド、そして既存の`Empty`ページのメソッドに
+追加した`Inertia.Share(...)`呼び出し(新しいメソッドを増やさずに
+除外パスを実証)。ビルドし、まずスナップショットを再生成する前に
+フルスイートを実行して実際の差分を確認し、その後スナップショットを
+再生成して、生成された`.d.ts`(`default.d.ts`と`non-null.d.ts`の両方)
+を目視で読み、`SharedData`・`extends`節・`InertiaMode`名前空間内の
+`SharedUserDto`の存在が、単に「差分が更新された」だけでなく構文的に
+正しく妥当なTypeScriptになっていることを確認した。フルスイート:
+14/14がパス。

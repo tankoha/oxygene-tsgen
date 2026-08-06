@@ -9,11 +9,11 @@
 > entry-point mode that is this tool's actual primary use case
 > (`--mode inertia`: discovers `Inertia.Render` call sites and generates a
 > Props interface per page, plus only the types actually reachable from
-> them). It only resolves a constrained set of prop-value shapes so far
-> (literals, parameter/local references, simple `new Type(...)`
-> constructions — see "CLI Usage" below for the exact scope), and Shared
-> Data merging / form-error types are not implemented yet. See "CLI Usage"
-> and "Current Status" below for what actually exists today,
+> them, plus a Shared Data interface every page extends and a paired
+> Form/`useForm()` error type). It only resolves a constrained set of
+> prop-value shapes so far (literals, parameter/local references, simple
+> `new Type(...)` constructions — see "CLI Usage" below for the exact
+> scope). See "CLI Usage" and "Current Status" below for what actually exists today,
 > [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
 > [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語) for the full design, and
 > [`HANDOFF.md`](HANDOFF.md) for the detailed build log and open questions.
@@ -26,10 +26,11 @@
 > スナップショットテスト済みの動くCLIがあります**。このツール本来の主な
 > 用途であるInertia.js固有のエントリーポイントモードのv1も含みます
 > (`--mode inertia`: `Inertia.Render`呼び出し箇所を検出し、ページごとに
-> Props interfaceと、そこから実際に到達可能な型だけを生成)。今のところ
-> 解決できるprops値の形は限定的です (リテラル、パラメータ/ローカル変数
-> への参照、単純な`new Type(...)`構築など — 正確な範囲は下記「CLIの
-> 使い方」参照)。共有データのマージやフォームエラー型はまだ未実装です。
+> Props interfaceと、そこから実際に到達可能な型だけを生成。あわせて、
+> 全ページが継承する共有データinterfaceと、対になるForm/`useForm()`
+> エラー型も生成)。今のところ解決できるprops値の形は限定的です
+> (リテラル、パラメータ/ローカル変数への参照、単純な`new Type(...)`
+> 構築など — 正確な範囲は下記「CLIの使い方」参照)。
 > 現時点で実際に存在するものは下記「CLIの使い方」
 > 「現在のステータス」を、設計の詳細は
 > [`docs/DESIGN.md`](docs/DESIGN.md) (英語) /
@@ -74,9 +75,20 @@ Props型自体に加えて、以下も生成対象に含める設計になって
 
 - **Shared Data types**, merging data injected on every page (auth user, flash
   messages, etc. via the Inertia middleware's `share()`-equivalent) with each
-  page's own Props
+  page's own Props — **v1 implemented** (`--mode inertia`, see "Current
+  Status" below); only `AddInertiaSharedData(...)` middleware registrations
+  are scanned (a bare `Inertia.Share(...)` call is detected but excluded,
+  since InertiaNetCore uses that same call for both app-global data and a
+  single page's own extra prop), and merging uses a TypeScript `extends`
+  clause rather than the intersection-type form originally designed
+  (`HANDOFF.md` §27)
   全ページ共通で注入される「**共有データ**」型 (認証ユーザー、フラッシュメッセージ等。
-  Inertiaミドルウェアの `share()` 相当の機構経由) を各ページ固有のPropsとマージ
+  Inertiaミドルウェアの `share()` 相当の機構経由) を各ページ固有のPropsとマージ —
+  **v1実装済み** (`--mode inertia`。下記「現在のステータス」参照)。スキャン対象は
+  `AddInertiaSharedData(...)`ミドルウェア登録のみ (単体の`Inertia.Share(...)`呼び出しは
+  検出はするが除外する。InertiaNetCoreがアプリ全体のデータと単一ページ固有の追加propの
+  両方に同じ呼び出しを使うため)。マージには、元の設計にあった交差型ではなくTypeScriptの
+  `extends`節を使う (`HANDOFF.md` §27)
 - **Form/`useForm()` error-shape types** for Inertia's client-side `useForm()`
   hook — **v1 implemented** (`--mode inertia`, see "Current Status" below);
   field names are reused from each page's own Props type rather than derived
@@ -181,7 +193,15 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   emits a paired Form/`useForm()` error-shape type per page
   (`Partial<Record<'field1' | 'field2' | ..., string>>`, `docs/DESIGN.md`
   §2.6 item 3/§5.4, `HANDOFF.md` §26), reusing the same field names as
-  the page's own Props type.
+  the page's own Props type. Also scans for InertiaNetCore's
+  `AddInertiaSharedData(...)` middleware registrations and emits a
+  `SharedData` interface every page's own Props interface `extends`
+  (`docs/DESIGN.md` §2.6 item 2/§7.1/§8.2, `HANDOFF.md` §27) — always
+  including three keys InertiaNetCore injects into every page regardless
+  of registration (`flash`, `timestamp`, `errors`); a bare
+  `Inertia.Share(...)` call is detected but excluded (with a diagnostic)
+  rather than classified as shared data, since the same call is also
+  used for a single page's own extra prop.
 - A `Tsgen.Diagnostics` component: pipeline stages return diagnostics
   instead of writing to the console directly, deduplicated and printed to
   stderr by the CLI.
@@ -218,7 +238,14 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   対になるForm/`useForm()`エラー形状型も出力する
   (`Partial<Record<'field1' | 'field2' | ..., string>>`、`docs/DESIGN.md`
   §2.6項目3/§5.4、`HANDOFF.md` §26)。フィールド名はそのページ自身の
-  Props型と同じものを再利用する。
+  Props型と同じものを再利用する。また、InertiaNetCoreの
+  `AddInertiaSharedData(...)`ミドルウェア登録をスキャンし、各ページ
+  自身のProps interfaceが`extends`する`SharedData` interfaceを出力する
+  (`docs/DESIGN.md` §2.6項目2/§7.1/§8.2、`HANDOFF.md` §27) — 登録の
+  有無に関わらずInertiaNetCoreが全ページに注入する3つのキー(`flash`、
+  `timestamp`、`errors`)を常に含める。単体の`Inertia.Share(...)`呼び
+  出しは、単一ページ固有の追加propにも同じ呼び出しが使われるため、
+  検出はするが共有データとしては分類せず除外する(診断メッセージ付き)。
 - `Tsgen.Diagnostics`コンポーネント: パイプラインの各ステージはコンソール
   に直接書き込む代わりに診断情報を返し、CLIが重複排除した上でstderrへ
   出力する。
@@ -227,9 +254,6 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
 
 **Not yet implemented / 未実装:**
 
-- Shared Data merging (`docs/DESIGN.md` §2.6 item 2) — the one remaining
-  Inertia-specific target beyond Page Props and Form/`useForm()` error
-  types (both now implemented).
 - Cycle detection (deliberately deferred — not load-bearing for the
   current `.d.ts`-only emitter, `docs/DESIGN.md` §3.3), the pluggable
   type-mapping/plugin chain, split-file output, real nested-type support
@@ -237,15 +261,30 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
 - `--mode inertia`'s own known v1 gaps: `new class(...)` anonymous-literal
   prop values, props built across multiple methods/classes, conditional
   key-setting, `Inertia.Defer`/`Inertia.Merge` unwrapping (`HANDOFF.md`
-  §24.6 has the full list).
+  §24.6 has the full list); Shared Data detection is conservative
+  (`AddInertiaSharedData(...)` only, not a bare `Inertia.Share(...)` —
+  `HANDOFF.md` §27).
+- A pre-existing, separate bug surfaced while investigating Shared Data:
+  Page Props keys/property names are emitted as written in Oxygene
+  source, but InertiaNetCore's default JSON options camelCase both —
+  tracked separately, not fixed as part of Shared Data (`HANDOFF.md`
+  §27, issue tracker).
 
-- 共有データのマージ (`docs/DESIGN.md` §2.6の項目2) — Page PropsとForm/
-  `useForm()`エラー型 (どちらも実装済み) を除く、残り1つのInertia固有
-  ターゲット。
 - 循環参照検出 (あえて先送り — 現状の`.d.ts`専用Emitterにとっては
   必須ではないため、`docs/DESIGN.md` §3.3)、プラガブルな型マッピング/
   pluginチェーン、split-file出力、nested typesの本当のサポート
   (post-MVPの優先順位は `docs/DESIGN.md` §10.2 参照)。
+- `--mode inertia`自身の既知のv1のギャップ: `new class(...)`による
+  anonymousリテラルのprops値、複数メソッド/クラスにまたがって構築される
+  props、条件分岐依存のキー設定、`Inertia.Defer`/`Inertia.Merge`の
+  アンラップ (完全な一覧は`HANDOFF.md` §24.6)。Shared Data検出は保守的
+  (`AddInertiaSharedData(...)`のみが対象で、単体の`Inertia.Share(...)`
+  は対象外 — `HANDOFF.md` §27)。
+- Shared Dataの調査中に見つかった、別件の既存バグ: Page Propsの
+  キー/プロパティ名はOxygeneソースの表記のまま出力されるが、
+  InertiaNetCoreの既定JSONオプションは両方をcamelCase変換する —
+  Shared Dataの一部としては修正せず、別途追跡する
+  (`HANDOFF.md` §27、issueトラッカー)。
 - `--mode inertia`自身の既知のv1のギャップ: `new class(...)`による
   anonymousリテラルのprops値、複数メソッド/クラスにまたがって構築される
   props、条件分岐依存のキー設定、`Inertia.Defer`/`Inertia.Merge`の

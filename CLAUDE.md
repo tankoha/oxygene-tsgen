@@ -17,13 +17,13 @@ a Tokenizer-based NRT source scanner feeding an `INullabilityProvider`
 chain, a lightweight Stage 2 IR with generics support (`List<T>`/
 `Dictionary<K,V>`/`Nullable<T>`/arrays/user-defined-type references), a
 single-file Stage 4 `DtsEmitter`, and now (`--mode inertia`) the
-Inertia.js entry-point-driven mode itself, including Page Props types and
-Form/`useForm()` error types (two of `docs/DESIGN.md` §2.6's three
-Inertia-specific targets) — see `HANDOFF.md` §12/§22/§23/§24/§26 for what
-was built, how, and its known limitations. Still missing: Shared Data
-types (§2.6 item 2, the last of the three), cycle detection (deliberately
-deferred, see below), and the pluggable type-mapping/plugin chain/
-split-file output. `docs/DESIGN.md` §10.2 has the post-MVP order.
+Inertia.js entry-point-driven mode itself, including all three of
+`docs/DESIGN.md` §2.6's Inertia-specific targets: Page Props, Form/
+`useForm()` error types, and Shared Data types — see `HANDOFF.md`
+§12/§22/§23/§24/§26/§27 for what was built, how, and its known
+limitations. Still missing: cycle detection (deliberately deferred, see
+below) and the pluggable type-mapping/plugin chain/split-file output.
+`docs/DESIGN.md` §10.2 has the post-MVP order.
 
 **Automated snapshot tests exist now:** run `tools/run-tests.ps1` (builds
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
@@ -43,8 +43,12 @@ nullability — see `HANDOFF.md` §20), `Generics` (`List<T>`/
 references — see `HANDOFF.md` §23.4), and `InertiaMode` (`--mode
 inertia`: call-site detection, reachability BFS, an unresolvable prop
 value falling back to `unknown` + diagnostic, the paired
-`XxxFormErrors` type per page, and a props-less page exercising its
-`Partial<Record<never, string>>` fallback — see `HANDOFF.md` §24.5/§26).
+`XxxFormErrors` type per page, a props-less page exercising its
+`Partial<Record<never, string>>` fallback, an `AddInertiaSharedData(...)`
+registration proving Shared Data detection + its own reachability
+seeding, and a bare `Inertia.Share(...)` call proving the
+detected-but-excluded diagnostic path — see `HANDOFF.md`
+§24.5/§26/§27).
 Nested types themselves remain uncovered and out of scope for real
 support: `AssemblyLoader` filters out every `t.IsNested` type before it
 reaches the IR, and `DtsEmitter` has no nested-`interface` output path
@@ -130,6 +134,31 @@ scan of some request DTO (a deliberate, smaller-scope v1 choice, not what
 alias, not an `interface`; an empty field list (a legitimate props-less
 page) falls back to `Partial<Record<never, string>>` since a union of
 zero string literals isn't valid TS.
+
+**Shared Data (`docs/DESIGN.md` §2.6 item 2/§7.1/§8.2, `HANDOFF.md`
+§27, spiked by a background Opus 5 agent before implementation)**:
+`InertiaIrBuilder.Build` also emits one `SharedData` interface in the
+`'Props'` namespace, and every page's Props interface `extends
+Props.SharedData` (`IrTypeLite` gained `BaseTypeNames: List<String>` for
+this — `DtsEmitter.EmitType` appends `' extends ' + ...` to the
+interface header when non-empty). `SharedData` always includes three
+keys InertiaNetCore injects into every page's payload unconditionally
+(`flash`, `timestamp`, `errors` — confirmed against InertiaNetCore's own
+source, not assumed), plus whatever fields `InertiaScanner` finds via
+`AddInertiaSharedData(Func<HttpContext, InertiaProps>)` middleware-
+registration call sites (detected by tracking a props var *newly
+declared inside* the call's argument span — same
+`propsFields`/`ParseVarDecl`/`ParsePropsAssignment` machinery as Page
+Props, zero new token IDs needed). A bare `Inertia.Share(key, value)`
+call is deliberately NOT treated as shared data in v1 — InertiaNetCore
+uses that same call for both app-global data and a single page's own
+extra prop, so the call shape alone can't classify it; it's detected and
+reported via diagnostic (`ParseShareCallExcluded`) but excluded, a
+scope decision the user can revisit later behind a CLI flag (not built
+yet). The reachability BFS is seeded from shared fields' types too, not
+just each page's own fields, so e.g. a shared `Auth: AuthUserDto` field
+gets `AuthUserDto` emitted and referenced instead of falling to
+`unknown`.
 
 When adding an NRT fixture, include both a `--nrt-unknown-policy
 non-null` case and at least one deliberately-unannotated *reference-type*

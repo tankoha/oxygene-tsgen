@@ -91,7 +91,24 @@ type
         aSb.AppendLine(aPad + 'export type ' + aType.Name + ' = Partial<Record<' + keysSb.ToString() + ', string>>;');
       end
       else begin
-        aSb.AppendLine(aPad + 'export interface ' + aType.Name + ' {');
+        {
+          BaseTypeNames is only populated for the Inertia Shared Data
+          feature (HANDOFF.md §27): each page's Props interface extends
+          the shared "SharedData" interface instead of duplicating its
+          members, so a key collision is a TypeScript compile error
+          rather than a silently-wrong type -- a deliberate choice given
+          shared data overwrites same-named page props at runtime
+          (confirmed in the spike this is based on).
+        }
+        var header := aPad + 'export interface ' + aType.Name;
+        if aType.BaseTypeNames.Count > 0 then begin
+          header := header + ' extends ';
+          for i: Int32 := 0 to aType.BaseTypeNames.Count - 1 do begin
+            if i > 0 then header := header + ', ';
+            header := header + aType.BaseTypeNames[i];
+          end;
+        end;
+        aSb.AppendLine(header + ' {');
         for each m in aType.Members do begin
           var tsType := TypeMapper.MapTypeRef(m.TypeRef, aKnownTypes);
           if tsType = 'unknown' then begin

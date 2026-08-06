@@ -11,9 +11,19 @@ declare namespace InertiaMode {
   export interface MetaDto {
     Title: string;
   }
+  export interface SharedUserDto {
+    Email: string;
+  }
 }
 declare namespace Props {
-  export interface ProfileProps {
+  export interface SharedData {
+    flash: Record<string, string>;
+    timestamp: string;
+    errors: Record<string, string>;
+    Auth: InertiaMode.SharedUserDto;
+    AppName: string;
+  }
+  export interface ProfileProps extends Props.SharedData {
     User: InertiaMode.UserDto;
     IsAdmin: boolean;
     Bio: string;
@@ -21,7 +31,7 @@ declare namespace Props {
     Note: unknown;
   }
   export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note', string>>;
-  export interface EmptyProps {
+  export interface EmptyProps extends Props.SharedData {
   }
   export type EmptyFormErrors = Partial<Record<never, string>>;
 }

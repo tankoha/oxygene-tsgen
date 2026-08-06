@@ -266,14 +266,31 @@ assembled, not how individual member types are mapped.
    convention is TBD — see §7.4 and the open question in §11). This requires
    discovering these call sites within method bodies (§3.5) — this part is new and
    unverified.
-2. **Shared Data types** — data injected into every page via the Inertia
+2. **Shared Data types — Implemented 2026-08-07, but not exactly as
+   originally designed below — see `HANDOFF.md` §27 for the full spike +
+   implementation writeup.** Data injected into every page via the Inertia
    middleware's `share()`-equivalent (e.g. current authenticated user, flash
-   messages) must be merged with each page's own Props type. The design
-   represents this as a separate `IrSharedDataContract` (§7.1) that every
+   messages) must be merged with each page's own Props type. This paragraph
+   originally proposed a separate `IrSharedDataContract` (§7.1) that every
    generated Page Props type structurally intersects with
    (`type PageProps<T> = SharedData & T`), rather than duplicating the shared
-   fields into every page interface — this avoids drift if the shared payload
-   changes.
+   fields into every page interface — to avoid drift if the shared payload
+   changes. **What was actually built**: a synthesized `SharedData`
+   interface (in the lite IR, one more `IrTypeLite`, not a distinct
+   `IrSharedDataContract` class), and each page's own Props interface
+   `extends` it (`interface XxxProps extends Props.SharedData`) instead of
+   intersecting with it. The `extends` form needed no new IR-model kind or
+   emitter branch, and — since InertiaNetCore's shared data actually
+   *overwrites* same-named page props at runtime, confirmed against its
+   source in the spike — makes a field-name collision a TypeScript compile
+   error rather than the intersection form's silent collapse to `never`.
+   Discovery scans for InertiaNetCore's real `AddInertiaSharedData(...)`
+   middleware-registration call shape (a bare `Inertia.Share(...)` call is
+   deliberately NOT classified as shared data in v1, since InertiaNetCore
+   uses that same call for both app-global data and a single page's own
+   extra prop — see `HANDOFF.md` §27 for the full classification-policy
+   discussion). Three keys InertiaNetCore injects into every page
+   unconditionally (`flash`, `timestamp`, `errors`) are always included.
 3. **Form/`useForm()` error types — Implemented 2026-08-07, see `HANDOFF.md`
    §26.** Inertia's client-side `useForm()` hook expects a field-name →
    error-message shape for validation errors. The originally-planned design
@@ -874,6 +891,13 @@ type
     SourceControllerAction: String;  // FQN of the controller method, for diagnostics/traceability
   end;
 
+  // Implemented 2026-08-07 (HANDOFF.md §27) against the lighter "lite IR"
+  // pipeline actually in use, not this full IrAssembly model: the lite
+  // pipeline realises this as one more synthesized IrTypeLite ("SharedData",
+  // src/Tsgen/Inertia/InertiaIrBuilder.pas) rather than a distinct class,
+  // the same relationship IrPageComponent above already has to the
+  // implemented InertiaPageProps. This sketch stays valid for a future
+  // full-IR implementation.
   IrSharedDataContract = public class
   public
     Members: List<IrMember>;         // e.g. auth user, flash messages; merged into every IrPageComponent's Props (§2.6 item 2)
@@ -980,17 +1004,30 @@ whether §8.3 is primary or secondary.
   sites (§3.5). Output is a componentName → Props-type association, emitted via
   `DtsEmitter` as ordinary `.d.ts` `interface`/`type` declarations (no new Stage 4
   component is needed — see the note in §1.1).
-- **Shared Data** (§2.6 item 2, `IrSharedDataContract`, §7.1): discovered from the
-  ASP.NET Core Inertia middleware's `share()`-equivalent registration. *How* to
-  reliably locate this registration in a target assembly/codebase (it's typically
-  a call made in `Startup`/`Program` configuration code, not a type or attribute)
-  is itself unresolved and depends on which adapter is chosen (§11) — some
-  adapters may expose shared-data registration in a more reflectable form (e.g. a
-  class implementing a well-known interface) than others, which is one more
-  reason the adapter choice (§11) needs to be made before this can be fully
-  designed.
-- Both are merged per §2.6 item 2's `SharedData & PageProps` intersection-type
-  strategy.
+- **Shared Data** (§2.6 item 2, `IrSharedDataContract`, §7.1) — **Implemented
+  2026-08-07, resolving this section's "how to locate it" question for the
+  InertiaNetCore adapter specifically; see `HANDOFF.md` §27 for the full
+  spike + implementation writeup.** InertiaNetCore is on the *non*-reflectable
+  side of the split this paragraph originally hoped for: there is no
+  interface or attribute to reflect on, only two call shapes —
+  `AddInertiaSharedData(Func<HttpContext, InertiaProps>)` (app-startup
+  middleware registration, unambiguously global, statically detectable) and
+  `Inertia.Share(key, value)` (used by InertiaNetCore for BOTH app-global
+  data and a single page's own extra prop — the call shape alone can't tell
+  the two apart). v1 scans for `AddInertiaSharedData(...)` only; a bare
+  `Inertia.Share(...)` is detected but deliberately excluded, with a
+  diagnostic, rather than guessed at (`HANDOFF.md` §27's classification-policy
+  discussion covers the rejected alternative and why). Also always includes
+  three keys (`flash`, `timestamp`, `errors`) InertiaNetCore injects into
+  every page's payload regardless of whether the app registers any shared
+  data at all.
+- Both are merged via a TypeScript `interface XxxProps extends
+  Props.SharedData` inheritance clause, not §2.6 item 2's originally-described
+  `SharedData & PageProps` intersection-type strategy — see `HANDOFF.md` §27
+  for why (no new IR-model kind/emitter branch needed, and a field-name
+  collision becomes a compile error rather than silently collapsing to
+  `never`, arguably more honest given shared data actually overwrites
+  same-named page props at runtime in InertiaNetCore).
 - Form/`useForm()` error types are covered separately in §5.4 (they reuse the
   existing validation-attribute reflection of §5, not new discovery logic).
 
@@ -1231,7 +1268,16 @@ Items to resolve before Phase 2 begins, or immediately after. Also documented in
    development. Affects how `Inertia.Render`'s call sites are detected (§3.5)
    and how Shared Data registration is discoverable (§8.2) — those sections
    should now be written against `InertiaNetCore` specifically rather than
-   left adapter-agnostic.
+   left adapter-agnostic. **Rationale staleness flagged 2026-08-07**
+   (`HANDOFF.md` §27's spike, incidental finding F-10): as of that date,
+   `InertiaNetCore`'s latest published release was 0.0.15 (2025-02-04), and
+   its GitHub repo's last push was the same day — roughly 18 months with no
+   release, not "actively developed" by the time this note was written. Not
+   itself a reason to switch (the API this spike verified is the one that
+   ships, and nothing about §3.5/§8.2's implementation depends on future
+   InertiaNetCore updates), but the original "actively developed" rationale
+   above should not be treated as current without rechecking — this is the
+   user's call to revisit or reaffirm, not decided here.
 7. ~~Which frontend framework to assume~~ **Decided: React** (2026-08-01 — see
    `HANDOFF.md` §6.4). Rationale: Japan's Digital Agency (デジタル庁) publishes
    publicly available reference snippets/components in React, and the

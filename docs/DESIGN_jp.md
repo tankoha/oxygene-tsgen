@@ -245,12 +245,31 @@ flowchart TD
    が `componentName` に紐付いた `interface`/`type` として生成される (具体的な命名・
    出力ファイル規約は未定 — §7.4と§11の未解決事項を参照)。これにはメソッド本体内での
    当該呼び出し箇所の発見 (§3.5) が必要であり、この部分は新規かつ未検証である。
-2. **Shared Data型** — Inertiaミドルウェアの `share()` 相当の機構で全ページに注入される
-   データ (現在の認証ユーザー、フラッシュメッセージ等) は、各ページ固有のProps型と
-   マージする必要がある。設計上は独立した `IrSharedDataContract` (§7.1) として表現し、
-   生成される各Page Props型がこれと構造的に交差型合成する
-   (`type PageProps<T> = SharedData & T`) 形にする。共有フィールドを各ページの
-   interfaceへ複製しないことで、共有データの内容変更時のドリフトを避ける。
+2. **Shared Data型 — 2026-08-07実装済み。ただし以下に元々書いていた設計通り
+   ではない — 完全なスパイク+実装の記録は`HANDOFF.md` §27を参照。**
+   Inertiaミドルウェアの `share()` 相当の機構で全ページに注入されるデータ
+   (現在の認証ユーザー、フラッシュメッセージ等) は、各ページ固有のProps型と
+   マージする必要がある。この段落は元々、独立した `IrSharedDataContract`
+   (§7.1) として表現し、生成される各Page Props型がこれと構造的に交差型合成
+   する(`type PageProps<T> = SharedData & T`)形を提案していた —
+   共有フィールドを各ページのinterfaceへ複製しないことで、共有データの内容
+   変更時のドリフトを避けるためである。**実際に実装した内容**: 合成済みの
+   `SharedData` interface(軽量IRでは、独立した`IrSharedDataContract`
+   クラスではなく、もう1つの`IrTypeLite`として)を1つ生成し、各ページ自身の
+   Props interfaceがこれと交差するのではなく`extends`する
+   (`interface XxxProps extends Props.SharedData`)形にした。`extends`形式
+   は新しいIRモデルの種別もEmitterの分岐も追加不要であり、また
+   InertiaNetCoreの共有データは実行時に同名のページpropsを実際に**上書き
+   する**ことがスパイクでソースコードに対して確認されているため、フィールド
+   名衝突時にTypeScriptのコンパイルエラーになる方が、交差型が黙って`never`
+   に潰れるより誠実だと言える。検出はInertiaNetCoreの実際の
+   `AddInertiaSharedData(...)`ミドルウェア登録の呼び出し形状をスキャンする
+   (単体の`Inertia.Share(...)`呼び出しは、InertiaNetCoreがアプリ全体の
+   データと単一ページ固有の追加propの両方に同じ呼び出しを使うため、v1では
+   意図的にShared Dataとして分類していない — 分類方針の議論の全体は
+   `HANDOFF.md` §27参照)。また、登録の有無に関わらずInertiaNetCoreが全
+   ページのペイロードに注入する3つのキー(`flash`、`timestamp`、`errors`)
+   を常に含める。
 3. **フォーム/`useForm()`エラー型 — 2026-08-07実装済み、`HANDOFF.md` §26参照。**
    Inertiaのクライアント側 `useForm()` フックは、バリデーションエラーに対して
    フィールド名→エラーメッセージの形を要求する。当初の計画(§5で設計済みの
@@ -824,6 +843,13 @@ type
     SourceControllerAction: String;  // Controllerメソッドの FQN (診断・トレーサビリティ用)
   end;
 
+  // 2026-08-07実装済み(`HANDOFF.md` §27)。ただし実際に使われている
+  // 軽量IRパイプラインに対してであり、このフルIRモデルに対してではない:
+  // 軽量パイプラインはこれを独立したクラスではなく、もう1つの合成された
+  // IrTypeLite("SharedData"、src/Tsgen/Inertia/InertiaIrBuilder.pas)として
+  // 実現している — 上の IrPageComponent が実装済みの InertiaPageProps に
+  // 対して既に持っているのと同じ関係である。このスケッチは、将来フルIR実装
+  // をする場合に備えて有効なまま残す。
   IrSharedDataContract = public class
   public
     Members: List<IrMember>;         // 例: 認証ユーザー、フラッシュメッセージ。各IrPageComponentのPropsにマージされる (§2.6項目2)
@@ -924,14 +950,29 @@ Props { ... }`ブロックにグルーピングし、裸のトップレベル`ex
   componentName → Props型の対応であり、`DtsEmitter` が通常の `.d.ts`
   `interface`/`type` 宣言として出力する (新規のStage 4コンポーネントは不要 — §1.1の
   補足を参照)。
-- **Shared Data** (§2.6項目2, `IrSharedDataContract`, §7.1): ASP.NET CoreのInertia
-  ミドルウェアの `share()` 相当の登録から発見する。この登録箇所を対象アセンブリ/
-  コードベースから確実に特定する「方法」自体が未解決であり (通常、型や属性ではなく
-  `Startup`/`Program` の設定コード内の呼び出しである)、どのアダプタを選ぶか (§11) に
-  依存する — アダプタによっては、共有データの登録をよりリフレクション可能な形
-  (例: 既知のインターフェースを実装するクラス) で公開している場合があり、これも
-  アダプタ選定 (§11) を先に済ませるべき理由の一つである。
-- 両者は§2.6項目2の `SharedData & PageProps` 交差型戦略でマージされる。
+- **Shared Data** (§2.6項目2, `IrSharedDataContract`, §7.1) — **2026-08-07
+  実装済み。本節の「どう特定するか」という問いを、InertiaNetCoreアダプタ
+  について具体的に解決した。完全なスパイク+実装の記録は`HANDOFF.md` §27
+  参照。** InertiaNetCoreは、この段落が元々期待していた区分でいうと
+  「リフレクション不可能」側に位置する: リフレクション可能なinterfaceや
+  属性は存在せず、2つの呼び出し形状があるのみである —
+  `AddInertiaSharedData(Func<HttpContext, InertiaProps>)`(アプリ起動時の
+  ミドルウェア登録。一意にグローバルであり、静的に検出可能)と
+  `Inertia.Share(key, value)`(InertiaNetCoreではアプリ全体のデータと
+  単一ページ固有の追加propの両方に使われ、呼び出し形状だけでは両者を
+  区別できない)。v1は`AddInertiaSharedData(...)`のみをスキャン対象とし、
+  単体の`Inertia.Share(...)`は検出はするが意図的に除外し、診断メッセージ
+  で報告する(推測はしない — `HANDOFF.md` §27に、却下した代替案とその
+  理由の議論がある)。また、アプリが共有データを一切登録していなくても
+  InertiaNetCoreが全ページのペイロードに注入する3つのキー(`flash`、
+  `timestamp`、`errors`)を常に含める。
+- 両者はTypeScriptの`interface XxxProps extends Props.SharedData`という
+  継承節でマージされ、§2.6項目2が元々説明していた`SharedData &
+  PageProps`交差型戦略ではない — 理由は`HANDOFF.md` §27参照(新しいIR
+  モデルの種別もEmitterの分岐も不要であり、フィールド名衝突時には黙って
+  `never`に潰れるのではなくコンパイルエラーになる。InertiaNetCoreでは
+  共有データが実行時に同名のページpropsを実際に上書きすることを踏まえる
+  と、これはより誠実な挙動だと言える)。
 - フォーム/`useForm()`エラー型は§5.4で別途扱う (これは§5の既存バリデーション属性反映を
   再利用するものであり、新規の発見ロジックではない)。
 
@@ -1152,7 +1193,17 @@ Phase 2着手前、または着手直後に解決すべき事項。詳細は `HA
    おり、`InertiaNetCore`は数少ない開発が活発なフォークの一つであるため。
    `Inertia.Render` の呼び出し箇所の検出方法 (§3.5) や、Shared Data登録の
    発見可能性 (§8.2) はこの決定の影響を受けるので、以降はアダプタ非依存では
-   なく `InertiaNetCore` を前提に書くこと。
+   なく `InertiaNetCore` を前提に書くこと。**理由の陳腐化を2026-08-07に
+   指摘(`HANDOFF.md` §27のスパイクによる副次的な発見、F-10)**: この日付
+   時点で`InertiaNetCore`の最新公開リリースは0.0.15(2025-02-04)であり、
+   GitHubリポジトリへの最終pushも同日だった — 約18ヶ月間リリースがなく、
+   この注記が書かれた時点では「開発が活発」とは言えない状態だった。これ
+   自体はアダプタを乗り換える理由にはならない(このスパイクで検証したAPI
+   はまさに現在出荷されているものであり、§3.5/§8.2の実装は今後の
+   `InertiaNetCore`の更新に依存していない)が、上記の「開発が活発」という
+   当初の理由は、再確認せずに現在も成立していると扱うべきではない —
+   これを見直すか再確認するかはユーザーの判断であり、ここで決めるもの
+   ではない。
 7. ~~想定するフロントエンドフレームワーク~~ **決定: React**
    (2026-08-01 — `HANDOFF.md` §6.4参照)。理由: デジタル庁が公開している
    リファレンス実装・スニペットがReactで提供されており、生成するProps型も
