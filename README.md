@@ -121,6 +121,75 @@ language, using the Echoes backend for the .NET target).
 Oxygene (Object Pascal 系言語、.NET ターゲットの Echoes バックエンドを使用) を
 使用します。
 
+### Why Not an Existing Tool Like TypeGen? / なぜTypeGen等の既存ツールではだめなのか
+
+Mature C# → TypeScript generators already exist (e.g.
+[TypeGen](https://github.com/jburzynski/TypeGen), NSwag, OpenAPI Generator) —
+so why build a new one? Two independent, verified reasons this codebase's
+source language (Oxygene, not C#) rules them out, not just a preference:
+
+1. **TypeGen parses C# source via Roslyn — it has no path to Oxygene at
+   all.** TypeGen works by reading C# source through the Roslyn compiler API
+   (including nullable-reference-type annotations straight from the C#
+   syntax tree, not from compiled-assembly metadata) — it has no
+   assembly-reflection-only mode as a fallback. Roslyn cannot parse Oxygene
+   syntax (`nullable String`, `array of`, `class ... end`, etc. — an
+   entirely different grammar), so there is no way to point TypeGen at an
+   Oxygene project at all, regardless of configuration.
+2. **Even a purely reflection-based tool would still miss nullability for
+   Oxygene-authored types.** Confirmed hands-on (`HANDOFF.md` §8): Oxygene's
+   Echoes (.NET) backend does not emit `NullableAttribute`/
+   `NullableContextAttribute` for Oxygene-authored code at all — the one
+   piece of metadata most generic .NET → TypeScript tools rely on for
+   nullable/non-nullable output simply isn't there to reflect on. This is
+   why `src/Tsgen/Nrt/NullabilityScanner.pas` exists: a source-level token
+   scan is the only viable way to recover this information for Oxygene
+   code, and no existing generic tool does this because no other .NET
+   language has this gap.
+
+On top of the language barrier, the Inertia.js-specific generation this tool
+actually exists for — discovering `Inertia.Render(componentName, data)` call
+sites in controller code, detecting `AddInertiaSharedData(...)` middleware
+registration, deriving `useForm()` error types from a page's own Props
+fields — has no equivalent in a generic DTO-mirroring tool like TypeGen in
+the first place; those tools mirror C# class shapes 1:1 and have no concept
+of an ASP.NET controller call site or Inertia's runtime data-merging
+behavior.
+
+成熟したC# → TypeScript生成ツールは既に存在します (例:
+[TypeGen](https://github.com/jburzynski/TypeGen)、NSwag、OpenAPI
+Generator)。ではなぜ新しく作るのか? このコードベースのソース言語
+(C#ではなくOxygene) に起因する、単なる好みではない、実機で確認済みの
+2つの独立した理由があります:
+
+1. **TypeGenはRoslyn経由でC#ソースを解析するため、Oxygeneに対する経路が
+   そもそも存在しない。** TypeGenはC#コンパイラAPIであるRoslynを通じて
+   C#ソースを読み込む方式で動作します (nullable参照型の注釈もコンパイル
+   済みアセンブリのメタデータからではなく、C#の構文木から直接取得する)。
+   アセンブリのリフレクションのみで動くフォールバックモードは存在しません。
+   RoslynはOxygeneの構文 (`nullable String`、`array of`、`class ... end`
+   等、全く異なる文法) を解析できないため、設定をどう変えてもTypeGenを
+   Oxygeneプロジェクトに向けること自体ができません。
+2. **純粋にリフレクションだけに頼るツールであっても、Oxygeneで書かれた
+   型のnullability情報は取得できない。** 実機で確認済み (`HANDOFF.md`
+   §8): OxygeneのEchoes (.NET) バックエンドは、Oxygeneで書かれたコードに
+   対して`NullableAttribute`/`NullableContextAttribute`を一切出力しません
+   — 大半の汎用 .NET → TypeScript ツールがnullable/non-nullableの出力に
+   依拠しているまさにそのメタデータが、そもそもリフレクションで拾える
+   形で存在しないのです。これが`src/Tsgen/Nrt/NullabilityScanner.pas`が
+   存在する理由です: Oxygeneコードについてこの情報を回復する唯一の実用的な
+   方法はソースレベルのトークンスキャンであり、他のどの.NET言語にもこの
+   ギャップが存在しないため、既存の汎用ツールはこれを一切行いません。
+
+言語の壁に加えて、このツールが実際に存在する理由であるInertia.js固有の
+生成機能 — Controllerコード中の`Inertia.Render(componentName, data)`
+呼び出し箇所の検出、`AddInertiaSharedData(...)`ミドルウェア登録の検出、
+ページ自身のPropsフィールドからの`useForm()`エラー型の導出 — は、
+TypeGenのような汎用DTOミラーリングツールにはそもそも相当する機能が
+ありません。それらのツールはC#クラスの形をそのまま1対1で写すだけであり、
+ASP.NET Controllerの呼び出し箇所やInertiaのランタイムデータマージ挙動
+という概念自体を持たないためです。
+
 ## Intended Use Cases / 想定ユースケース
 
 - Auto-generate the Props type for an Inertia.js page component directly from
