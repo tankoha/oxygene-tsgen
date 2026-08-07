@@ -10,7 +10,9 @@
 > (`--mode inertia`: discovers `Inertia.Render` call sites and generates a
 > Props interface per page, plus only the types actually reachable from
 > them, plus a Shared Data interface every page extends and a paired
-> Form/`useForm()` error type). It only resolves a constrained set of
+> Form/`useForm()` error type — **all three of `docs/DESIGN.md` §2.6's
+> Inertia-specific targets (Page Props, Shared Data, Form/`useForm()`
+> errors) are now implemented**, see `HANDOFF.md` §24/§26/§27). It only resolves a constrained set of
 > prop-value shapes so far (literals, parameter/local references, simple
 > `new Type(...)` constructions — see "CLI Usage" below for the exact
 > scope). See "CLI Usage" and "Current Status" below for what actually exists today,
@@ -28,7 +30,9 @@
 > (`--mode inertia`: `Inertia.Render`呼び出し箇所を検出し、ページごとに
 > Props interfaceと、そこから実際に到達可能な型だけを生成。あわせて、
 > 全ページが継承する共有データinterfaceと、対になるForm/`useForm()`
-> エラー型も生成)。今のところ解決できるprops値の形は限定的です
+> エラー型も生成 — **`docs/DESIGN.md` §2.6の3つのInertia固有ターゲット
+> (Page Props、Shared Data、Form/`useForm()`エラー)は全て実装済みです**。
+> `HANDOFF.md` §24/§26/§27参照)。今のところ解決できるprops値の形は限定的です
 > (リテラル、パラメータ/ローカル変数への参照、単純な`new Type(...)`
 > 構築など — 正確な範囲は下記「CLIの使い方」参照)。
 > 現時点で実際に存在するものは下記「CLIの使い方」
@@ -131,12 +135,16 @@ Oxygene (Object Pascal 系言語、.NET ターゲットの Echoes バックエ�
   各ページ固有のPropsと、全ページに注入される「共有データ」(認証ユーザー、
   フラッシュメッセージ等) を単一の一貫した型にマージする。
 - Generate the field-name → error-message shape for Inertia's `useForm()`
-  client hook directly from .NET validation attributes (`[Required]`, etc.),
-  keeping frontend form-error handling in sync with backend validation without
-  hand-maintained duplication.
+  client hook automatically from each page's own generated Props type
+  (**v1 implemented** this way — not from .NET validation attributes as
+  originally envisioned, see "What Is This?" above and `HANDOFF.md` §26),
+  keeping frontend form-error handling in sync without hand-maintained
+  duplication.
   Inertiaの `useForm()` クライアントフック向けの、フィールド名→エラーメッセージの
-  型を .NET側のバリデーション属性 (`[Required]` 等) から直接生成し、フロントエンド側の
-  フォームエラー処理をバックエンドのバリデーションと手動同期せずに済むようにする。
+  型を、各ページの生成済みProps型から自動生成する(**v1はこの形で実装済み** —
+  当初構想していた .NETバリデーション属性からの生成ではない。上記「これは何か」と
+  `HANDOFF.md` §26参照)。フロントエンド側のフォームエラー処理を手動同期せずに
+  済むようにする。
 - (Secondary, for projects not using Inertia.js) Treat DTO/entity definitions
   in a .NET backend more generally as the single source of truth, and
   auto-generate TypeScript frontend types to prevent drift from manual
@@ -160,7 +168,7 @@ case.**
 Inertia.jsエントリーポイントモードのv1も含みます。**
 
 **Implemented (`src/Tsgen`, see [`CLAUDE.md`](CLAUDE.md) and
-[`HANDOFF.md`](HANDOFF.md) §12–§24 for the full build log):**
+[`HANDOFF.md`](HANDOFF.md) §12–§29 for the full build log):**
 
 - Stage 1 Loader — metadata-only assembly loading via
   `System.Reflection.MetadataLoadContext` (no execution of target code).
@@ -181,10 +189,12 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
 - Stage 3/4 type mapping + emitter — generics (`List<T>`-family → `T[]`,
   `Dictionary<K,V>`-family → `Record<K,V>`, `Nullable<T>`/`Task<T>`/
   `ValueTask<T>` unwrapping), references between the tool's own emitted
-  types, and single-file `.d.ts` output with a choice of enum style and
-  NRT-unknown-member policy (see "CLI Usage" below). The full pluggable
-  `ITypeMappingRule` chain is not yet implemented — type mapping is a
-  fixed set of rules, not user-extensible yet.
+  types, and single-file `.d.ts` output with a choice of enum style,
+  NRT-unknown-member policy, and member-naming policy (`camelCase`
+  default, or `as-written`; see "CLI Usage" below, `docs/DESIGN.md`
+  §5.1/`HANDOFF.md` §28). The full pluggable `ITypeMappingRule` chain is
+  not yet implemented — type mapping is a fixed set of rules, not
+  user-extensible yet.
 - **`--mode inertia`**: entry-point-driven discovery (`docs/DESIGN.md`
   §3.5) — finds `Inertia.Render` call sites, resolves the props shape
   built up via `props['key'] := value;` assignments in the same method,
@@ -205,10 +215,10 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
 - A `Tsgen.Diagnostics` component: pipeline stages return diagnostics
   instead of writing to the console directly, deduplicated and printed to
   stderr by the CLI.
-- Automated snapshot tests (`tools/run-tests.ps1`): 6 fixtures, 14 cases.
+- Automated snapshot tests (`tools/run-tests.ps1`): 6 fixtures, 16 cases.
 
 **実装済み (`src/Tsgen`。詳細な作業ログは [`CLAUDE.md`](CLAUDE.md) と
-[`HANDOFF.md`](HANDOFF.md) §12–§24 を参照):**
+[`HANDOFF.md`](HANDOFF.md) §12–§29 を参照):**
 
 - Stage 1 Loader — `System.Reflection.MetadataLoadContext` によるメタデータ
   のみのアセンブリ読み込み (対象コードを実行しない)。非public/nested/
@@ -226,10 +236,11 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
 - Stage 3/4 型マッピング + Emitter — generics(`List<T>`系 → `T[]`、
   `Dictionary<K,V>`系 → `Record<K,V>`、`Nullable<T>`/`Task<T>`/
   `ValueTask<T>`のアンラップ)、このツール自身が出力する型同士の参照、
-  そしてenumスタイルとNRT-unknownメンバーのポリシーを選択できる単一
-  ファイルの`.d.ts`出力(下記「CLIの使い方」参照)。完全にプラガブルな
-  `ITypeMappingRule`チェーンは未実装 — 型マッピングは固定のルール集合で
-  あり、まだユーザー拡張はできない。
+  そしてenumスタイル・NRT-unknownメンバーのポリシー・メンバー命名
+  ポリシー(既定`camelCase`、または`as-written`。下記「CLIの使い方」、
+  `docs/DESIGN.md` §5.1/`HANDOFF.md` §28参照)を選択できる単一ファイルの
+  `.d.ts`出力。完全にプラガブルな`ITypeMappingRule`チェーンは未実装 —
+  型マッピングは固定のルール集合であり、まだユーザー拡張はできない。
 - **`--mode inertia`**: エントリーポイント駆動の型発見
   (`docs/DESIGN.md` §3.5)— `Inertia.Render`呼び出し箇所を見つけ、
   同じメソッド内の`props['key'] := value;`という代入で組み立てられた
@@ -250,7 +261,7 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   に直接書き込む代わりに診断情報を返し、CLIが重複排除した上でstderrへ
   出力する。
 - 自動化されたスナップショットテスト (`tools/run-tests.ps1`): 6フィクスチャ・
-  14ケース。
+  16ケース。
 
 **Not yet implemented / 未実装:**
 
@@ -264,11 +275,6 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   §24.6 has the full list); Shared Data detection is conservative
   (`AddInertiaSharedData(...)` only, not a bare `Inertia.Share(...)` —
   `HANDOFF.md` §27).
-- A pre-existing, separate bug surfaced while investigating Shared Data:
-  Page Props keys/property names are emitted as written in Oxygene
-  source, but InertiaNetCore's default JSON options camelCase both —
-  tracked separately, not fixed as part of Shared Data (`HANDOFF.md`
-  §27, issue tracker).
 
 - 循環参照検出 (あえて先送り — 現状の`.d.ts`専用Emitterにとっては
   必須ではないため、`docs/DESIGN.md` §3.3)、プラガブルな型マッピング/
@@ -280,15 +286,6 @@ Inertia.jsエントリーポイントモードのv1も含みます。**
   アンラップ (完全な一覧は`HANDOFF.md` §24.6)。Shared Data検出は保守的
   (`AddInertiaSharedData(...)`のみが対象で、単体の`Inertia.Share(...)`
   は対象外 — `HANDOFF.md` §27)。
-- Shared Dataの調査中に見つかった、別件の既存バグ: Page Propsの
-  キー/プロパティ名はOxygeneソースの表記のまま出力されるが、
-  InertiaNetCoreの既定JSONオプションは両方をcamelCase変換する —
-  Shared Dataの一部としては修正せず、別途追跡する
-  (`HANDOFF.md` §27、issueトラッカー)。
-- `--mode inertia`自身の既知のv1のギャップ: `new class(...)`による
-  anonymousリテラルのprops値、複数メソッド/クラスにまたがって構築される
-  props、条件分岐依存のキー設定、`Inertia.Defer`/`Inertia.Merge`の
-  アンラップ (完全な一覧は`HANDOFF.md` §24.6)。
 
 - Design document: [`docs/DESIGN.md`](docs/DESIGN.md) (English) /
   [`docs/DESIGN_jp.md`](docs/DESIGN_jp.md) (日本語)
@@ -319,7 +316,8 @@ Build with `tools/dev-build.ps1` (not `EBuild.exe` directly — see
 tsgen generate --assembly <path.dll> --source <dir> --out <dir> \
   [--mode assembly|inertia] \
   [--enum-style numeric|union] \
-  [--nrt-unknown-policy nullable|non-null|mark-unknown]
+  [--nrt-unknown-policy nullable|non-null|mark-unknown] \
+  [--naming-policy camelCase|as-written]
 ```
 
 - `--mode` — `assembly` (default) generates types for every public type in
@@ -413,6 +411,30 @@ tsgen generate --assembly <path.dll> --source <dir> --out <dir> \
     TypeScriptの型システムには「nullability未確定」を「non-nullable
     確定」と区別して表現する手段がないため、コメントで目視・grep両方
     から区別できるようにしている)
+- `--naming-policy` — how member/property names are cased in the emitted
+  `.d.ts`, applied uniformly regardless of `--mode` (`docs/DESIGN.md`
+  §5.1, `HANDOFF.md` §28):
+  出力する`.d.ts`でメンバー/プロパティ名をどう大文字小文字変換するか。
+  `--mode`に関わらず一律に適用される(`docs/DESIGN.md` §5.1、
+  `HANDOFF.md` §28):
+  - `camelCase` (default) — lowercases just the first character
+    (`UserId` → `userId`), matching `System.Text.Json`'s own default
+    `JsonNamingPolicy` (what ASP.NET Core Web API/InertiaNetCore actually
+    send on the wire unless a project reconfigures `JsonSerializerOptions`).
+    Does not replicate `JsonNamingPolicy.CamelCase`'s real acronym-run
+    handling (e.g. a property literally named `ID`) — a known, accepted
+    v1 simplification.
+    (既定) — 先頭の1文字だけを小文字化する (`UserId` → `userId`)。
+    `System.Text.Json`自身の既定`JsonNamingPolicy`に合わせている
+    (プロジェクトが`JsonSerializerOptions`を再設定しない限り、
+    ASP.NET Core Web API/InertiaNetCoreが実際にワイヤー上で送信する形)。
+    `JsonNamingPolicy.CamelCase`の実際の頭字語(acronym)連続の扱い
+    (例: `ID`というプロパティ名) は再現しない — 既知の、受容された
+    v1の簡略化。
+  - `as-written` — emits names exactly as written in the Oxygene source
+    (the tool's behavior before this flag existed).
+    Oxygeneソースに書かれた表記のまま出力する (このフラグが存在する
+    前の挙動)。
 
 ## MVP (Phase 2 Initial Target) / MVP (Phase 2 最初の到達目標)
 

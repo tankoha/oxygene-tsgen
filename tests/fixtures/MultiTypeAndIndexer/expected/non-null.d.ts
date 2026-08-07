@@ -6,11 +6,11 @@ declare namespace MultiTypeAndIndexer {
     Bar = 1,
   }
   export interface Alpha {
-    Name: string | null;
+    name: string | null;
   }
   export interface Beta {
-    Name: string;
-    Item: string;
-    Count: number;
+    name: string;
+    item: string;
+    count: number;
   }
 }

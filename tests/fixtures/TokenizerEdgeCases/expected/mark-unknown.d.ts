@@ -2,14 +2,14 @@
 
 declare namespace TokenizerEdgeCases {
   export interface Tricky {
-    AfterCommentSayingNullable: string; // nrt: unknown
-    AfterBlockComment: string; // nrt: unknown
-    AfterXmlDocComment: string; // nrt: unknown
-    WithKeywordDefault: string;
-    AfterKeywordDefault: string; // nrt: unknown
-    ExplicitlyNullable: string | null;
-    ExplicitlyNotNullable: string;
-    FirstName: string | null;
-    LastName: string | null;
+    afterCommentSayingNullable: string; // nrt: unknown
+    afterBlockComment: string; // nrt: unknown
+    afterXmlDocComment: string; // nrt: unknown
+    withKeywordDefault: string;
+    afterKeywordDefault: string; // nrt: unknown
+    explicitlyNullable: string | null;
+    explicitlyNotNullable: string;
+    firstName: string | null;
+    lastName: string | null;
   }
 }

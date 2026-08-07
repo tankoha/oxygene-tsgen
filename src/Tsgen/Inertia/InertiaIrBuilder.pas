@@ -156,6 +156,20 @@ type
         call sites -- a bare Inertia.Share(...) call is deliberately NOT
         classified as shared data, see InertiaScanner.ParseShareCallExcluded)
         are appended after the three framework-injected ones.
+
+        These three Names are set to their real wire form directly and
+        are unaffected by --naming-policy either way (Fable5 review
+        question, HANDOFF.md §29/§30) -- not by oversight, but because
+        neither naming-policy value changes them: "as-written" has no
+        Oxygene source declaration to preserve the casing OF (these
+        fields are synthetic, not scanned), and DtsEmitter's camelCase
+        transform lowercases only a leading uppercase run, which is a
+        no-op on an already-all-lowercase single word like "flash" --
+        true for any realistic JsonSerializerOptions.DictionaryKeyPolicy
+        an app might actually configure (None or CamelCase both leave
+        these three exact literal strings unchanged; only a policy that
+        uppercases already-lowercase keys, which no built-in
+        JsonNamingPolicy does, would disagree).
       }
       var sharedType := new IrTypeLite;
       sharedType.NamespaceName := 'Props';
@@ -174,6 +188,22 @@ type
       timestampMember.Nullability := NullabilityKind.IsNotNullable;
       sharedType.Members.Add(timestampMember);
 
+      {
+        Known, unreconciled type-representation tension (Fable5 review,
+        HANDOFF.md §29/§30): this `errors` member and the per-page
+        `XxxFormErrors` type (§26) both describe the same runtime
+        payload key (InertiaNetCore's `AddErrors(...)`, read by the
+        frontend's `useForm()` hook), but as two different, incompatible
+        shapes -- `Record<string, string>` here (any key) vs.
+        `Partial<Record<'field1' | 'field2', string>>` there (only that
+        page's own Props field names). Not unified: `SharedData` is one
+        interface shared by every page, while `XxxFormErrors` is
+        page-specific, and `Record<string, string>`'s implicit index
+        signature isn't cleanly narrowable to a fixed-key `Partial<Record<...>>`
+        as a TypeScript interface-member override. Left as an open
+        question for a future pass rather than guessed at under a commit
+        deadline.
+      }
       var errorsMember := new IrMemberLite;
       errorsMember.Name := 'errors';
       errorsMember.TypeRef := MakeStringToStringDictionaryTypeRef();

@@ -2,7 +2,7 @@
 
 > 🇯🇵 [日本語版はこちら / Japanese version](./DESIGN_jp.md)
 
-**Status**: Design phase complete. Implementation (Phase 2) not yet started.
+**Status**: Design phase complete. Implementation (Phase 2) has a working, snapshot-tested CLI covering the MVP and well beyond it — see `HANDOFF.md` and `CLAUDE.md`'s Project Status for current detail; this document's individual sections carry their own "Implemented" notes as they land.
 **Scope**: Design for the maximum configuration (full scope). The MVP scope is stated explicitly at the end of this document.
 **Implementation language**: Oxygene (RemObjects Elements, `.NET` target = the **Echoes** backend).
 
@@ -689,7 +689,7 @@ adding Provider 3 possible without touching the IR shape at all.
 
 | Source | Mapped To | Notes |
 |---|---|---|
-| `System.Text.Json.Serialization.JsonPropertyName` | Property name conversion | Highest priority. If absent, the naming convention is converted by simulating the `JsonNamingPolicy` setting (camelCase, etc.) |
+| `System.Text.Json.Serialization.JsonPropertyName` | Property name conversion | Highest priority (still not implemented — reading this attribute would need `AssemblyLoader` to reflect custom attributes, which it doesn't yet). If absent, the naming convention is converted by simulating the `JsonNamingPolicy` setting (camelCase, etc.) — **the camelCase-simulation half implemented 2026-08-07, `--naming-policy camelCase\|as-written` (default `camelCase`), `HANDOFF.md` §28.** Applies uniformly regardless of `--mode` (this was always a general concern, not Inertia-specific, despite being found via the Inertia Shared Data spike, §27) |
 | `System.Text.Json.Serialization.JsonIgnore` | Property exclusion | `Condition` (WhenWritingNull, etc.) gets simplified support; the exact spec will be finalized in Phase 2 |
 | XML doc comments (`///`; on the Oxygene side, whether `///` or a `{{ }}`-equivalent syntax is used needs investigation) | JSDoc (`/** ... */`) | The `.xml` documentation file generated alongside the assembly is located and read, following the same convention as MSBuild |
 | `System.ObsoleteAttribute` | `@deprecated` JSDoc tag | `Message`/`IsError` are also reflected |
@@ -1028,8 +1028,11 @@ whether §8.3 is primary or secondary.
   collision becomes a compile error rather than silently collapsing to
   `never`, arguably more honest given shared data actually overwrites
   same-named page props at runtime in InertiaNetCore).
-- Form/`useForm()` error types are covered separately in §5.4 (they reuse the
-  existing validation-attribute reflection of §5, not new discovery logic).
+- Form/`useForm()` error types are covered separately in §5.4 — **as
+  actually implemented (`HANDOFF.md` §26), they reuse each page's own
+  Props field-name list, not the validation-attribute reflection of §5**
+  (§5.4's own text once said the latter; corrected there and here
+  2026-08-07, found stale by a Fable5 consistency review).
 
 ### 8.3 Generic REST/OpenAPI Integration (Secondary, De-Prioritized)
 
@@ -1184,7 +1187,12 @@ As agreed at requirements-definition time, the following is the minimum bar:
    `lazy()`-wrapping makes it load-bearing rather than cosmetic.
 3. XML Doc → JSDoc, `[Obsolete]` → `@deprecated` (prioritized within the
    metadata layer for its low implementation cost and high payoff)
-4. Naming conversion via `System.Text.Json` attributes
+4. ~~Naming conversion via `System.Text.Json` attributes~~ **Partially
+   implemented 2026-08-07 (`HANDOFF.md` §28): the `JsonNamingPolicy`-
+   simulation half (`--naming-policy camelCase|as-written`, default
+   `camelCase`) is done; reading the `[JsonPropertyName]` attribute
+   itself is not (needs `AssemblyLoader` to reflect custom attributes,
+   which it doesn't yet) — still open.**
 5. Custom type override configuration (§7.3)
 6. Record/tuple support
 7. Validation attributes → zod/io-ts schema generation (§5.3)

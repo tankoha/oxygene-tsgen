@@ -2,6 +2,6 @@
 
 declare namespace NestedTypeCollision {
   export interface Outer {
-    Name: string | null;
+    name: string | null;
   }
 }

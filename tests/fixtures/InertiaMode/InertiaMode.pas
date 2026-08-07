@@ -84,7 +84,11 @@ type
   // (a statement-bodied lambda declaring its own InertiaProps and
   // `exit`ing it) -- proves AddInertiaSharedData(...) detection and the
   // "new props var declared inside the region" field-collection rule
-  // (HANDOFF.md §27).
+  // (HANDOFF.md §27). "Flash" deliberately collides, after the default
+  // camelCase naming policy, with SharedData's own hardcoded "flash"
+  // floor key -- proves DtsEmitter.EmitType's same-interface duplicate-
+  // member detection (HANDOFF.md §29/§30), not just that the floor keys
+  // exist.
   Startup = public class
   public
     method Configure(app: AppBuilder);
@@ -93,6 +97,7 @@ type
         var shared := new InertiaProps;
         shared['Auth'] := new SharedUserDto;
         shared['AppName'] := 'InertiaModeFixture';
+        shared['Flash'] := 'collides-with-floor-key';
         exit shared;
       end);
     end;

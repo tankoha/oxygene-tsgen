@@ -21,18 +21,29 @@ Inertia.js entry-point-driven mode itself, including all three of
 `docs/DESIGN.md` §2.6's Inertia-specific targets: Page Props, Form/
 `useForm()` error types, and Shared Data types — see `HANDOFF.md`
 §12/§22/§23/§24/§26/§27 for what was built, how, and its known
-limitations. Still missing: cycle detection (deliberately deferred, see
-below) and the pluggable type-mapping/plugin chain/split-file output.
-`docs/DESIGN.md` §10.2 has the post-MVP order.
+limitations. Member/property names go through a `--naming-policy
+camelCase|as-written` conversion (default `camelCase`, matching
+`System.Text.Json`'s own default) applied uniformly regardless of
+`--mode` — see `HANDOFF.md` §28. Still missing: cycle detection
+(deliberately deferred, see below), the `[JsonPropertyName]` attribute
+override (§5.1's naming-conversion story is only half-done), and the
+pluggable type-mapping/plugin chain/split-file output. `docs/DESIGN.md`
+§10.2 has the post-MVP order.
 
 **Automated snapshot tests exist now:** run `tools/run-tests.ps1` (builds
 the CLI + every fixture under `tests/fixtures/`, then diffs `tsgen`
 output against committed `expected/*.d.ts` snapshots per fixture's
 `cases.json`). Pass `-UpdateSnapshots` to regenerate expectations after
-an intentional output change. See `HANDOFF.md` §15. Six fixtures exist,
-14 cases total: `SampleModel` (enums, explicit NRT, all three
-`--nrt-unknown-policy` values via its deliberately-still-`Unknown` `Notes`
-field — see `HANDOFF.md` §21.3 for why that field exists),
+an intentional output change. See `HANDOFF.md` §15. **The comparison is
+case-sensitive on purpose (`-ceq`, not PowerShell's default `-eq`) —
+PowerShell's `-eq` is case-insensitive for strings, which silently made
+the whole suite blind to case-only regressions until this was found and
+fixed alongside the `--naming-policy` bug, `HANDOFF.md` §28. Don't
+"simplify" it back to `-eq`.** Six fixtures exist, 16 cases total:
+`SampleModel` (enums, explicit NRT, all three `--nrt-unknown-policy`
+values via its deliberately-still-`Unknown` `Notes` field — see
+`HANDOFF.md` §21.3 for why that field exists — plus `as-written` for
+`--naming-policy`, `HANDOFF.md` §28),
 `TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
 trailing newline, also covers `mark-unknown`), `MultiTypeAndIndexer`
 (multiple types sharing one `type` section, indexer-style properties —
@@ -46,9 +57,17 @@ value falling back to `unknown` + diagnostic, the paired
 `XxxFormErrors` type per page, a props-less page exercising its
 `Partial<Record<never, string>>` fallback, an `AddInertiaSharedData(...)`
 registration proving Shared Data detection + its own reachability
-seeding, and a bare `Inertia.Share(...)` call proving the
-detected-but-excluded diagnostic path — see `HANDOFF.md`
-§24.5/§26/§27).
+seeding, a bare `Inertia.Share(...)` call proving the
+detected-but-excluded diagnostic path, a shared field name that collides
+with a `SharedData` floor key after the naming-policy transform proving
+the duplicate-member skip-and-warn path, and its own `as-written` case
+proving `ClassLike`/`FormErrorsLike` casing stay consistent with each
+other under either naming policy — see `HANDOFF.md`
+§24.5/§26/§27/§29/§30). Also: enum-valued flags (`--mode`,
+`--enum-style`, `--nrt-unknown-policy`, `--naming-policy`) reject an
+unrecognized value with a clean error instead of silently defaulting
+(`HANDOFF.md` §30) — don't reintroduce a silent-fallback `else` branch
+for one of these without a matching rejection case.
 Nested types themselves remain uncovered and out of scope for real
 support: `AssemblyLoader` filters out every `t.IsNested` type before it
 reaches the IR, and `DtsEmitter` has no nested-`interface` output path

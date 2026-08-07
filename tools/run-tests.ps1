@@ -92,7 +92,14 @@ Get-ChildItem $fixturesRoot -Directory | ForEach-Object {
         $actual = Normalize-Text (Get-Content $actualPath -Raw)
         $expected = Normalize-Text (Get-Content $expectedPath -Raw)
 
-        if ($actual -eq $expected) {
+        # PowerShell's -eq is case-INSENSITIVE for strings by default (a
+        # well-known gotcha) -- this silently meant the whole snapshot
+        # suite could never catch a case-only regression, discovered
+        # while verifying the --naming-policy fix for issue #55 (see
+        # HANDOFF.md §28): "Id" and "id" compared equal here. -ceq forces
+        # ordinal/case-sensitive comparison, matching what "diff the
+        # actual .d.ts against the expected one" should actually mean.
+        if ($actual -ceq $expected) {
             Write-Host "  [PASS] $($fixtureDir.Name)/$($case.name)" -ForegroundColor Green
         } else {
             Write-Host "  [FAIL] $($fixtureDir.Name)/$($case.name): output does not match $($case.expected)" -ForegroundColor Red

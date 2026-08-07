@@ -2,7 +2,10 @@
 
 > 🇬🇧 [English version](./DESIGN.md)
 
-**ステータス**: 設計フェーズ完了。実装 (Phase 2) 未着手。
+**ステータス**: 設計フェーズ完了。実装 (Phase 2) はMVPを大きく超えて
+動くCLIがあり、スナップショットテスト済み — 現在の詳細は`HANDOFF.md`と
+`CLAUDE.md`のProject Statusを参照。本書の各セクションは実装が完了する
+たびに、それぞれ「実装済み」の注記を追記している。
 **対象**: 最大構成 (フルスコープ) の設計。MVP範囲は本書末尾で明示する。
 **実装言語**: Oxygene (RemObjects Elements, `.NET` ターゲット = **Echoes** バックエンド)。
 
@@ -652,7 +655,7 @@ Emitterまで運ばれており、これがあったからこそProvider 3をIR�
 
 | 情報源 | 反映先 | 備考 |
 |---|---|---|
-| `System.Text.Json.Serialization.JsonPropertyName` | プロパティ名変換 | 最優先。無ければ `JsonNamingPolicy` 設定 (camelCase等) をシミュレートして命名規則変換 |
+| `System.Text.Json.Serialization.JsonPropertyName` | プロパティ名変換 | 最優先(まだ未実装 — この属性を読むには`AssemblyLoader`がカスタム属性をreflectionする必要があるが、まだ対応していない)。無ければ `JsonNamingPolicy` 設定 (camelCase等) をシミュレートして命名規則変換 — **camelCaseシミュレートの半分は2026-08-07に実装済み、`--naming-policy camelCase\|as-written`(既定は`camelCase`)、`HANDOFF.md` §28。** `--mode`に関わらず一律に適用する(Inertia Shared Dataのスパイク経由で発見したが、§27、これは元々Inertia固有ではなく一般的な関心事だった) |
 | `System.Text.Json.Serialization.JsonIgnore` | プロパティ除外 | `Condition` (WhenWritingNull等) は簡易対応、詳細はPhase 2で仕様確定 |
 | XML Doc コメント (`///`, Oxygene側は `///` または `{{ }}` 相当の構文を要調査) | JSDoc (`/** ... */`) | アセンブリ横に生成される `.xml` ドキュメントファイルをMSBuild同様の慣習で探索して読み込む |
 | `System.ObsoleteAttribute` | `@deprecated` JSDocタグ | `Message`/`IsError` も反映 |
@@ -973,8 +976,11 @@ Props { ... }`ブロックにグルーピングし、裸のトップレベル`ex
   `never`に潰れるのではなくコンパイルエラーになる。InertiaNetCoreでは
   共有データが実行時に同名のページpropsを実際に上書きすることを踏まえる
   と、これはより誠実な挙動だと言える)。
-- フォーム/`useForm()`エラー型は§5.4で別途扱う (これは§5の既存バリデーション属性反映を
-  再利用するものであり、新規の発見ロジックではない)。
+- フォーム/`useForm()`エラー型は§5.4で別途扱う — **実際の実装
+  (`HANDOFF.md` §26)では、§5のバリデーション属性反映ではなく、各
+  ページ自身のProps型のフィールド名リストを再利用する**(§5.4自身も
+  かつては前者と書いていた。2026-08-07、Fable5による整合性レビューで
+  古い記述と判明し、こことあわせて訂正)。
 
 ### 8.3 汎用REST/OpenAPI連携 (副次的・優先度低)
 
@@ -1120,7 +1126,12 @@ export async function getUserById(
    なった時に見直す。
 3. XML Doc → JSDoc、`[Obsolete]` → `@deprecated` (メタデータ層の中でも
    実装コストが低く効果が高いため優先)
-4. `System.Text.Json` 属性による命名変換
+4. ~~`System.Text.Json` 属性による命名変換~~ **2026-08-07に一部実装
+   (`HANDOFF.md` §28): `JsonNamingPolicy`シミュレートの半分
+   (`--naming-policy camelCase|as-written`、既定は`camelCase`)は完了。
+   `[JsonPropertyName]`属性自体を読む機能は未実装(`AssemblyLoader`が
+   カスタム属性をreflectionする必要があるが、まだ対応していない) —
+   引き続き未解決。**
 5. カスタム型オーバーライド設定 (§7.3)
 6. record/タプル対応
 7. バリデーション属性 → zod/io-tsスキーマ生成 (§5.3)

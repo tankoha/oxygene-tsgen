@@ -2,15 +2,15 @@
 
 declare namespace Generics {
   export interface Tag {
-    Label: string;
+    label: string;
   }
   export interface Node {
-    Value: string;
-    Children: Generics.Node[];
-    Tags: Generics.Tag[];
-    Scores: number[];
-    Lookup: Record<string, number>;
-    MaybeCount: number | null;
-    Numbers: number[];
+    value: string;
+    children: Generics.Node[];
+    tags: Generics.Tag[];
+    scores: number[];
+    lookup: Record<string, number>;
+    maybeCount: number | null;
+    numbers: number[];
   }
 }

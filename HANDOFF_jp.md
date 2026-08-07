@@ -2500,10 +2500,25 @@ namespaceすべてが、下流のコードからどう消費されるかが黙�
 フォールバックを証明する)。`UnusedDto`は宣言されているが到達可能な
 ものからは何も参照されておらず、BFSフィルタが単にアセンブリ全体の
 挙動にフォールバックするのではなく、実際にフィルタリングすることを
-証明する。2ケース(`default`、`non-null`)により、到達可能な型
-(`RoleDto`/`UserDto`/`MetaDto`)と合成された`Props.ProfileProps`
-インターフェースの両方が`--nrt-unknown-policy`を正しく追跡し、
-`IsAdmin`はどちらの下でもnon-nullableのままであることを確認する。
+証明する。2ケース(`default`、`non-null`)により、合成された
+`Props.ProfileProps`インターフェースの*無注釈*のメンバー(`Note`、
+および`Role`の参照型フィールド)が`--nrt-unknown-policy`を正しく
+追跡し、`IsAdmin`はどちらの下でもnon-nullableのままであることを
+確認する。
+
+**訂正(2026-08-07、§29): この段落の以前のバージョンにあった
+「`RoleDto`/`UserDto`/`MetaDto`のプロパティが`--nrt-unknown-policy`を
+正しく追跡している」という主張は誤りであり、しかも実バグを検出する
+のではなく正当化してしまう形の誤りだった。** `RoleDto.Name`、
+`UserDto.Email`、`MetaDto.Title`はこのフィクスチャのソース内で
+全て明示的に`not nullable`と注釈されている。§21/READMEが掲げる中核
+的なNRTの約束(「明示的な注釈はポリシーに関わらず常に優先される」)
+からすれば、これらは本来`--nrt-unknown-policy`によって変化しては
+ならなかった。実際に変化して見えたのは正しい挙動の確認ではなく、
+§29が修正するスキャナのバグの症状だった。外部(Fable5)によるレビュー
+で発覚したものであり、このフィクスチャ自身が役目を果たして見つけた
+ものではない — バグの詳細、なぜ`non-null`ケースが特にこれを検出
+できなかったか、そして修正内容は§29を参照。
 
 スナップショットを固定する前に実機で確認した(このセッションの
 全フィクスチャと同じ規律): `tsgen --mode inertia`を直接実行し、
@@ -2798,8 +2813,15 @@ Railsなど他のInertiaアダプタの慣習からの類推ではない)**:
   されている(`InertiaProps.Merge`)ため、これは黙って潰れるより
   正直な挙動だと言える。`docs/DESIGN.md` §2.6/§7.1/§8.2は、元の
   交差型のスケッチではなくこの方式を説明するよう追って修正が必要
-  である(今回のパスでは未実施 — 設計文書を修正する前に、まず
-  ここに発見内容を書き残すという本プロジェクトの慣習に従っている)。
+  である。
+  **同じセッション内、本節を書いた直後に完了** — §2.6/§7.1/§8.2の
+  `extends`ベースへの書き換えは実際に行った(英語版・`DESIGN_jp.md`
+  ミラー版とも)が、このフラグ自体を「完了した」と更新し忘れていた
+  ため、修正後もあたかも未完了の負債であるかのように読める状態が
+  残っていた。§29のFable5レビューで発覚したものであり、この節を
+  読み返して気づいたわけではない — 「ドキュメントは更新したが、
+  それを指し示していた注記の更新を忘れる」という、§29が扱っている
+  ものと同種の小さなずれである。
 - **camelCase変換によるキー/プロパティ名のギャップ**: スパイクは
   副次的に、InertiaNetCoreの既定`JsonSerializerOptions`が辞書キーと
   POCOのプロパティ名の両方をcamelCase変換することも明らかにした。
@@ -2899,3 +2921,313 @@ extension class構文を正確に再現する必要を回避できる)、共有�
 `SharedUserDto`の存在が、単に「差分が更新された」だけでなく構文的に
 正しく妥当なTypeScriptになっていることを確認した。フルスイート:
 14/14がパス。
+
+## 28. issue #55の修正: 両モード共通のcamelCase命名ポリシー(2026-08-07)
+
+issue管理表の項目#55をクローズする。§27のShared Dataスパイク中に
+副次的に見つかった問題: InertiaNetCoreの既定`JsonSerializerOptions`は
+辞書キーとPOCOプロパティ名の両方をcamelCase変換するため、Page Propsの
+出力がOxygeneソースの表記のまま(`User`、`IsAdmin`等)出力されていると、
+実際のワイヤーペイロード(`user`、`isAdmin`等)と一致していなかった。
+`docs/DESIGN.md` §5.1はこれを当初からInertia固有ではなく一般的な
+「`JsonNamingPolicy`設定をシミュレートする」機能として説明していたが、
+どちらのモードでも実装されたことがなかった。
+
+**スコープの決定(実装前にユーザーに確認)**: `--mode assembly`と
+`--mode inertia`の両方に適用する(実装箇所は`DtsEmitter.EmitType`の
+1箇所のみで済み、Inertia専用のパッチ扱いにするより§5.1の元々の一般的な
+説明に沿う)。新しい`--naming-policy camelCase|as-written`フラグとして
+追加し、**既定値は`camelCase`とする**(元のas-writtenのままをデフォルト
+として残すのではなく) — 元の既定挙動こそが実際のバグであり、既定値
+として保持する価値のあるスタイル選択ではなかったため。また、
+`camelCase`はプロジェクトが`JsonSerializerOptions`を再設定しない限り
+ASP.NET Core/`System.Text.Json`自身が既定で使う値と一致する。
+
+**実装**(`src/Tsgen/Emit/DtsEmitter.pas`、`src/Tsgen/Cli/Program.pas`):
+新しい`NamingPolicy = public enum (AsWritten, CamelCase)`と
+`ApplyNamingPolicy`/`ToCamelCase`ヘルパーを追加し、
+`DtsEmitter.Emit`/`EmitType`経由で渡して、実際にJSONプロパティ名が
+出力される2箇所に適用した: `ClassLike`のinterfaceメンバーと、
+`FormErrorsLike`の`Record<'key1' | 'key2', string>`のキーリテラル
+(両者は互いに一致していなければならない — `ProfileFormErrors`のキーは
+`ProfileProps`のメンバーと*同じ*フィールドを表すため、両方に同じ変換を
+かけないと黙って食い違ってしまう)。意図的に適用しなかったもの:
+型/interface名自体(`ProfileProps`、`SharedData`等はJSONペイロードの
+キーではなくTypeScript側の識別子である)と、`EnumLike`の値名
+(`System.Text.Json`のenum文字列変換は`PropertyNamingPolicy`とは別の、
+`JsonStringEnumConverter`自身の命名ポリシーで制御される — これは仮定
+ではなく、実際に別の仕組みであることを確認した上での判断)。未マップ
+型の診断メッセージは引き続き変換前(ソースの表記のまま)の名前を使う —
+診断はユーザーが自分のソースのどこを見ればよいかを指し示すべきもの
+だからである。
+
+**`ToCamelCase`は`JsonNamingPolicy.CamelCase.ConvertName`の移植では
+なく、簡略化した代替実装である**: 先頭の1文字だけを小文字化する。
+このコードベース自身のフィクスチャ/DTOが使っている唯一の形である、
+通常のPascalCaseのOxygene識別子であれば全て正しく変換できるが、実際の
+アルゴリズムが持つ頭字語(acronym)の連続の扱い(例: `ID`や`URLPath`
+というプロパティ名)は再現していない。今そのロジックを移植するのでは
+なく、意図的に文書化されたv1のギャップとした — `InertiaScanner`の
+短縮名衝突の注記(§24.6)など、このコードベースが既に持つヒューリス
+ティックな限界に対する許容度と同じ考え方である。
+
+**この修正を検証する過程で、別件の無関係なバグも見つかり、あわせて
+修正した**: `tools/run-tests.ps1`のスナップショット比較はPowerShellの
+`-eq`演算子を使っていたが、これは**文字列に対して既定で大文字小文字を
+区別しない**(PowerShellでは`"Id" -eq "id"`が`$true`になる — 仮定では
+なく実機で確認済み)。これは、スナップショットスイート全体が大文字
+小文字だけの回帰を一度も検出できなかったことを意味する — この修正
+そのものも例外ではなく、`--naming-policy`を実装した後の最初の
+`tools/run-tests.ps1`実行は、実際の出力がcamelCaseでコミット済みの
+スナップショットが全てPascalCaseのままだったにもかかわらず、14/14で
+PASSと報告した。変更の規模の割に「まだ全部緑」なのが不審だったため
+発覚した — スクリプトのクリーンアップ処理を無効化した一時的なデバッグ
+用コピーで`_actual/`ディレクトリを保持し、手動で`diff`を取ったところ、
+ファイルの中身は実際に異なっているのにスクリプトはPASSと報告し続けて
+いることを確認した。比較を`-ceq`(順序ベース/大文字小文字を区別する
+比較)に変更して修正した。これはまさに「テストがまだ通っている」という
+状態の裏に隠れるタイプのバグである — このテストランナーが存在した
+期間全体を通じて(`HANDOFF.md` §15)、緑のスナップショットスイートは
+実は一度も大文字小文字を検証していなかった、という点は覚えておく価値
+がある。今回の1件の修正に限った話ではない。
+
+**フィクスチャ**: `tests/fixtures/SampleModel/cases.json`に`as-written`
+ケース(`--naming-policy as-written`)を追加し、単にcamelCaseが既定で
+動くことだけでなく、オプトアウトが実際に旧来のPascalCase挙動を復元
+することも証明した。大文字小文字を区別する比較が既に修正された状態で
+全スナップショットを再生成(6フィクスチャ・15ケース、新規1ケース)し、
+変更された全ファイルの差分を目視確認した — 型/interface名は変更されて
+いないこと、変わるのはメンバー/プロパティ名と`FormErrorsLike`のキー
+リテラルだけであること、`SharedData`の既にlowercaseだったフロアキー
+(`flash`/`timestamp`/`errors`)は影響を受けない(同じコード経路を通る
+が大文字小文字変換的には無害な変化なし)こと、そして`SampleModel`の
+enum値名(`Active`/`Inactive`/`Pending`)が正しく変更されていないこと
+を確認した。フルスイート: 15/15がパス。
+
+## 29. Fable5による整合性レビュー(2026-08-07): 実バグ1件とドキュメントの陳腐化
+
+コミット・push期限が迫る中、バックグラウンドでFable5エージェントに
+プロジェクト全体(設計フェーズ以降、特に直近実装した§24〜§28の
+Inertia機能群を重点的に)のレビューを依頼した — 内部矛盾、ドキュメント
+と実際の挙動の不一致、不合理な決定がないかを、実装したモデル自身では
+見つけにくい観点から確認する、このプロジェクトが序盤(§9/§13あたり)
+で2度使った手法と同じものである。結果、実際に本番に影響する実バグを
+1件と、複数の古くなった相互参照が見つかった。本節はバグの方を扱う —
+ドキュメントの修正は`README.md`/`docs/DESIGN.md`に直接適用し、独立した
+記録は残さなかった(小さく機械的な訂正で、「古くなっていたものを直した」
+以上に記録すべき新しい情報・決定がないため)。
+
+**バグ: `NullabilityScanner.IsTypeOpen`が、静的メンバーの`class`キーワード
+を型宣言だと誤認識していた。** Oxygeneの静的メンバー修飾子
+(`class method`、`class var`、`class property`、`class constructor`、
+`class operator`)は`class`キーワードを再利用する — これは`ScanFile`が
+`TypeName = ... class`という型宣言を検出するために監視しているのと
+同じトークンである。`IsTypeOpen`の後方への走査(`;`/`begin`/`end`でしか
+停止しない)には両者を区別する手段がなかった: 可視性セクションヘッダー
+の直後の*最初の*メンバーが`class method`等である型(まだセミコロンが
+現れていない、ヘッダー自体がセミコロンで終わらないため)の場合、走査は
+その`class`トークンをそのまま通過し、さらにその型自身の`class`/可視性
+トークンも通過して、*外側*の型自身の`TypeName = `のイコール記号まで
+到達してしまい、偽の2回目の型開始を報告する。この余分な`inc(depth)`は
+対応する減算と一度も対にならず(静的メソッド自身の`class`キーワードは
+自分自身の`begin...end`ブロックを開かない)、`depth`はファイルの残り
+全体にわたって恒久的に1つずれたままになる。`currentTypeName`/
+`typeDepth`は`if String.IsNullOrEmpty(currentTypeName)`の場合にしか
+(再)代入されず、`currentTypeName`は最初の(本物の)型からのもので既に
+空でなかったため、それ以降同じファイル内で宣言されたどの型もプロパティ
+/フィールドがスキャンされなくなった — §20のnested typeバグの後に追加
+済みの`(depth = typeDepth)`ガードにより、いずれも黙って`Unknown`に
+劣化するだけで、別の型のエントリを破壊することはない(それだけがせめて
+もの救いである)。具体的には`tests/fixtures/InertiaMode/InertiaMode.pas`
+で、`Inertia`クラスの`class method Render`/`class method Share`(まさに
+その最初のメンバー)がこれを引き起こし、それ以降そのファイル内で宣言
+された型(`RoleDto`/`UserDto`/`MetaDto`/`SharedUserDto`/`Controller`/
+`Startup`)は残り全体でNRTスキャンを失う。実際の対象コードベースでも、
+他の型より前に置かれた普通の静的ヘルパークラス — Oxygeneではごく
+ありふれたパターン — があれば同様に発生する。このフィクスチャ特有の
+形に限った話ではない。
+
+**なぜスナップショットスイートが検出できず、むしろ隠してしまったか**:
+`RoleDto.Name`/`UserDto.Email`/`MetaDto.Title`/`SharedUserDto.Email`は
+全てフィクスチャ内で明示的に`not nullable`と注釈されている。バグに
+よってその注釈が失われた結果、これらは本当に`Unknown`にフォール
+バックし、`--nrt-unknown-policy`の既定(`nullable`)はそれを`T | null`
+として出力する — 誤りだが、`default`ケース自身のコミット済み
+スナップショットは単純にそのバグ後の(誤った)出力をそのまま「期待値」
+として焼き込んでいたため、テストは通っていた。CLAUDE.mdの標準ルールが
+「`Unknown`のままか」と「注釈が漏れた/失われたか」を区別するために
+まさに全NRTフィクスチャに必要だとしている`non-null`ケースも、ここでは
+検出できなかった — しかもCLAUDE.mdが既に文書化している通常の「両方とも
+`| null`になる」というケースよりもさらに鋭い理由による: `non-null`
+ポリシーの下では`Unknown`は素の`T`として出力されるが、これは正しく
+`not nullable`と認識されたメンバーの出力と*全く同一*である。存在する
+2つのケースは、まさにこのバグの出力について意見が一致してしまう組み
+合わせだった。さらに`HANDOFF.md` §24.5は、この誤った挙動を「合格した
+テストの成功基準」として正当化してしまっていた(「到達可能な型…が
+`--nrt-unknown-policy`を正しく追跡することを確認する」)— 上記の
+§24.5で訂正済み。黙って書き換えるのではなく訂正として残してある。
+
+**修正**(`src/Tsgen/Nrt/NullabilityScanner.pas`、`IsTypeOpen`): 前方
+先読みを追加した — 候補となる`class`の直後のトークンが
+`method`/`var`/`property`/`constructor`/`operator`であれば、それは
+静的メンバー修飾子であって型宣言ではないため、後方への走査を一切
+行わずに`IsTypeOpen`は`false`を返す。`TOK_METHOD`/`TOK_VAR`は
+`InertiaScanner.pas`で既に動作確認済みの`Token.TI_method`/
+`Token.TI_var`という全く同じ定数を再利用しており、`TOK_PROPERTY`は
+このファイル内で既に宣言済みだった。`TOK_CONSTRUCTOR`/`TOK_OPERATOR`
+(`Token.TI_constructor`/`Token.TI_operator`)は新規で、コンパイルが
+成功したことで存在を確認した(仮定ではない)。後方走査自体の停止
+トークン集合を変更する方法は意図的に採らなかった(`public`/`private`
+を停止トークンに加えることも検討したが却下した — これらのキーワードは
+型自身の可視性修飾子として`class`の直前に現れる場合と、独立した
+メンバー可視性セクションヘッダーとして現れる場合の両方があり、
+トークンIDだけでは区別できない。今回の先読みの方がより正確にこの
+状況を扱える)。
+
+**検証**: リビルドして2つの新しいトークン定数がコンパイルできることを
+確認し、スナップショットに一切触れる前にフルスイートを実行した —
+14/15がパスし、`InertiaMode/default`だけが失敗、この修正の影響範囲が
+まさにこのパターンを実際に使っているフィクスチャだけに絞られている
+ことを確認した。`InertiaMode/non-null`は変更なしで既にパスしていた
+(上記の仕組みと整合する — このケースはどちらにせよバグと正しい挙動を
+区別できない)。スナップショットを再生成した後、
+`InertiaMode/expected/default.d.ts`を目視で読み: `name`/`email`/`title`
+は今やポリシーに関わらず正しく`| null`なしで出力され、
+`role: InertiaMode.RoleDto | null`(本当に無注釈)は引き続き正しく
+ポリシーを追跡していることを確認した。フルスイート: 15/15がパス。
+
+新しいフィクスチャは追加していない — `InertiaMode`の既存の`Inertia`
+クラスが既にこのトリガーパターン(型の最初のメンバーが`class method`)
+を使っており、`default`のスナップショットはこれが再発すれば再び失敗
+するため、今や本物の回帰テストとして機能する。
+
+## 30. Fable5レビュー、Finding 6〜9への対応(2026-08-07、同日・コミット期限前)
+
+コミット・push予定時刻までまだ時間があったため、§29レビューの残り
+4件(重要度が低いもの)を「記録のみで先送り」にせず対応した。
+
+**Finding 6(記録の不整合)**: §27自身の記述が、`docs/DESIGN.md`
+§2.6/§7.1/§8.2の`extends`ベースへの書き換えを「今回のパスでは未実施」
+としていたが、実際には*同じセッションの、その少し後で*実施済み
+だった — フラグ自体を「実施済み」と更新し忘れていただけである。
+その場でフラグの記述を修正して対応した(上記§27参照)。新規の作業
+としては扱っていない。
+
+**Finding 7a(実バグ、修正済み): 発見された共有データフィールドが、
+命名ポリシー変換後に`SharedData`自身のハードコードされたフロアキー
+と衝突する可能性がある。** 例えば対象アプリが
+`AddInertiaSharedData(...)`経由で`shared['Flash'] := ...`を登録した
+場合、既定の`camelCase`ポリシーの下では、`SharedData`自身が持つ
+フレームワーク由来の`flash: Record<string, string>`と並んで2つ目の
+`flash`メンバーが生成されてしまう — 生成される`.d.ts`内でinterface
+のメンバーは1つの宣言内で一意でなければならないため、これは
+TypeScriptの「重複識別子」コンパイルエラーになる(ページのPropsと
+`SharedData`の間の`extends`衝突とは*別物*で、そちらは§27の設計上、
+意図的にコンパイルエラーのまま残している)。`DtsEmitter.EmitType`の
+`ClassLike`分岐で修正した: `HashSet<String>`で*現在の*interfaceに
+既に出力済みの名前(命名ポリシー変換後)を追跡し、後から出てきた
+メンバーの変換後の名前が既存のものと重複していれば、それを出力せず
+`aDiagnostics.AddWarning(...)`で報告するようにした(出力は常に有効な
+TypeScriptのままになる)。意図的に1回の`EmitType`呼び出し(1つの
+interface自身の`Members`リスト)の範囲に限定しており、`extends`の
+境界をまたいでは適用していない — そちらは意図的にコンパイルエラーの
+ままにしてある。フロアキーは発見されたフィールドより先に
+`SharedData.Members`に追加される(`InertiaIrBuilder.Build`)ため、
+「後から来た重複を捨てる」という挙動は、InertiaNetCoreの実際の
+ランタイム優先順位ともたまたま一致する: スパイク(§27)で
+`Response.GetFinalProps`が`AddFlash(...)`/`AddTimeStamp()`を、登録
+済みの共有データをマージした*後*に適用することが分かっており、
+実行時にもフレームワーク側の値が同名の登録フィールドを上書きする
+— 都合よく選んだ偶然ではなく、§27が既に依拠していたのと同じスパイク
+の発見に基づいて確認したものである。
+
+推論だけを信用せず、実際の回帰ケースを追加した:
+`tests/fixtures/InertiaMode/InertiaMode.pas`の`Startup.Configure`に
+`shared['Flash'] := 'collides-with-floor-key'`という登録も追加した。
+スナップショットに触れる前にリビルドしてスイートを実行し、診断が
+実際に発火すること(`duplicate member "flash" on SharedData after
+naming-policy transform (source name "Flash")`)と、
+`InertiaMode/default`/`non-null`が**変更なしでパスし続ける**ことを
+確認した — これは衝突が出力を壊さずに黙って安全に落とされていること
+の証明である(診断は比較対象の`.d.ts`には含まれないため、衝突が
+正しく処理されればスナップショットには何も変化しない — ここで差分が
+出ないこと自体が「何も起きなかった」のではなく「修正が機能している」
+ことの確認である)。
+
+**Finding 7b(調査済み、コード変更は不要 — 既存の挙動は既に正しかった)**:
+`SharedData`の3つのフロアキー(`flash`/`timestamp`/`errors`、常に
+lowercase)が`--naming-policy as-written`の下でもlowercaseのまま
+なのは、他の全てのメンバーがOxygeneソースの表記に戻るのに対して、
+実は隠れた不整合ではないかとレビューで指摘された。検討の結果、
+そうではないと判断した理由: (1) `as-written`はそもそも、この3つに
+ついて保存すべきOxygeneソース上の宣言を持たない — これらは合成
+されたものであり、実ソースからスキャンされたことは一度もないため、
+「書かれた通り」という概念自体が意味を持たない。この3つに対する
+ツール自身の一貫した挙動は「常に実際のワイヤー上の名前を使う」で
+ある。(2) それを措くとしても、`DtsEmitter`の`camelCase`変換は
+メンバー名の*先頭1文字*だけを小文字化するものであり、
+`flash`/`timestamp`/`errors`のような既に全て小文字の単語に対しては
+無変化(no-op)である — つまりどちらの命名ポリシー値であっても
+影響を受けない。これはアプリが実際に設定しうる現実的などの
+`JsonSerializerOptions.DictionaryKeyPolicy`に対しても成り立つ
+(`None`も`CamelCase`も、この3つの文字列を変更しない — 既に小文字の
+キーを*大文字化*するような組み込み`JsonNamingPolicy`は存在しない)。
+この推論は、これまでどこにも明記されていなかった("述べられていない
+前提"であるというレビューの指摘は正しかった)ため、`InertiaIrBuilder.pas`
+のフロアキー構築箇所に直接コメントとして記録した。新規追加した
+`tests/fixtures/InertiaMode/expected/as-written.d.ts`(下記Finding 9
+参照)は、これをそのまま示している: 同じinterface内で
+`flash`/`timestamp`/`errors`はlowercaseのままだが、
+`Auth`/`AppName`/`Flash`は元のOxygeneの表記(as-written)に戻る。
+
+**Finding 7(`errors`キーの型表現のずれ): 記録のみ、修正はしていない。**
+`SharedData.errors: Record<string, string>`と、各ページの
+`XxxFormErrors = Partial<Record<'field1' | 'field2', string>>`(§26)は、
+どちらも同じ実行時のペイロードキーを指しているが、互いに矛盾する
+2つの形で表現している。今回は解決しなかった — `SharedData`は全ページ
+で共有される1つのinterfaceであるのに対し、`XxxFormErrors`はページ
+固有であり、`Record<string, string>`が持つ暗黙のインデックスシグネ
+チャは、TypeScriptのinterfaceメンバーのオーバーライドとして、固定
+キーの`Partial<Record<...>>`へきれいに narrowing できるものではない
+ため、これを解消するにはどちらの表現を優先するか、あるいは明示的な
+関係性を記した上で両者を別のまま残すかという、本物の設計判断が必要
+であり、コミット期限当日に一存で決めるべきことではないと判断した。
+コード内(`InertiaIrBuilder.pas`の`errorsMember`のそば)とここの両方に
+記録し、見失わないようにした。
+
+**Finding 8(実際のギャップ、修正済み): enum値を取るCLIフラグが、
+認識できない値を全て受け入れて黙ってデフォルトにフォールバックして
+いた**。値が欠けているケースは§25で既に修正済みだったのと非対称で
+あり、しかも§28が`--naming-policy`の既定値を挙動を変える側に変更した
+ことで、より深刻な問題になっていた: `--naming-policy aswritten`の
+ようなtypoは、これまで黙って`camelCase`出力を生成していた — まさに
+このフラグでオプトアウトしようとしていたのと正反対の結果である。
+`Program.pas`で修正した: `--enum-style`、`--nrt-unknown-policy`、
+`--mode`、`--naming-policy`のそれぞれが既知のリテラル値と明示的に
+照合するようになり、それ以外の値には(既存の`missingValueFor`と対に
+なる)新しい`invalidFlag`/`invalidValue`/`invalidAllowedValues`という
+番兵をセットし、パースループの直後にチェックする: `Error: --flag
+does not accept "value" -- valid values are: a, b, c`(終了コード1)。
+検査だけでなく実機でも確認した: `tsgen generate --assembly ...
+--out ... --naming-policy bogus`と`--mode bogus`のどちらも、今や
+綺麗なエラーを表示して終了コード1になることを確認した(以前は
+どちらも黙ってデフォルト値で実行されていた)。
+
+**Finding 9(テストカバレッジの欠落、修正済み)**: §28が述べている
+不変条件 — `ClassLike`のメンバー名と`FormErrorsLike`のキーリテラルは
+同じ命名ポリシーの下で一貫して変換されなければならない — は、
+`SampleModel`の`as-written`ケースでしかスナップショットテストされて
+おらず、そちらには`FormErrorsLike`型が一切存在しない(assemblyモード
+のため)。`tests/fixtures/InertiaMode/cases.json`に独自の`as-written`
+ケース(`--mode inertia --naming-policy as-written`)を追加し、この
+不変条件を両側から実際にテストできるようにした。生成された
+`expected/as-written.d.ts`を目視確認: `ProfileFormErrors`は正しく
+`Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note', string>>`
+(PascalCase、`ProfileProps`自身の戻されたメンバー表記と一致)と
+なっており、camelCaseのままではない。
+
+**本節全体の検証**: 各変更ごとにリビルドし(トークン関連の新しい詳細
+2件をコンパイルその場で確認 — 仮定は一切していない)、スナップショット
+に触れる前にまずフルスイートを実行して各変更の実際の効果を確認して
+から、再生成して変更された`.d.ts`を全て目視確認した。最終状態:
+6フィクスチャ、**16/16ケースがパス**。

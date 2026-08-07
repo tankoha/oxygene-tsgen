@@ -8,5 +8,10 @@
     "name": "non-null",
     "args": ["--mode", "inertia", "--nrt-unknown-policy", "non-null"],
     "expected": "expected/non-null.d.ts"
+  },
+  {
+    "name": "as-written",
+    "args": ["--mode", "inertia", "--naming-policy", "as-written"],
+    "expected": "expected/as-written.d.ts"
   }
 ]

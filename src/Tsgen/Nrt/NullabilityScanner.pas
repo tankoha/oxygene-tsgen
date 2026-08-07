@@ -78,10 +78,41 @@ type
     const TOK_NULLABLE = Token.TI_nullable;
     const TOK_NOT = Token.TI_not;
     const TOK_NAMESPACE = Token.TI_namespace;
+    const TOK_METHOD = Token.TI_method;
+    const TOK_VAR = Token.TI_var;
+    const TOK_CONSTRUCTOR = Token.TI_constructor;
+    const TOK_OPERATOR = Token.TI_operator;
 
+    {
+      "class" is also Oxygene's static-member modifier ("class method",
+      "class var", "class property", "class constructor", "class
+      operator") -- not just the type-declaration keyword. Without this
+      check, the backward walk below (which only stops at ";"/"begin"/
+      "end") sailed straight through a static member's own "class"
+      keyword, the type's own "class"/visibility tokens, and reached the
+      ENCLOSING type's "TypeName = ... class" equals sign, wrongly
+      reporting a second type-open for the first "class method"/"class
+      var"/etc. in a type body. That extra unmatched depth increment
+      then permanently desynced depth vs. typeDepth for the rest of the
+      file: currentTypeName never got cleared/reassigned again, so every
+      subsequent type's properties/fields silently failed the
+      "(depth = typeDepth)" guard and were skipped -- not attributed to
+      the wrong type, just dropped, which is how tests/fixtures/InertiaMode
+      shipped with wrong snapshots (explicit "not nullable" annotations
+      rendering as policy-dependent Unknown) without any test catching it.
+      Found via a Fable5 consistency review, not a test -- confirmed
+      hands-on by rebuilding and diffing every fixture snapshot.
+    }
     class method IsTypeOpen(aTokens: List<ScanToken>; aIndex: Int32): Boolean;
     begin
       result := false;
+      if (aIndex + 1 < aTokens.Count) then begin
+        var nextId := aTokens[aIndex + 1].Id;
+        if (nextId = TOK_METHOD) or (nextId = TOK_VAR) or (nextId = TOK_PROPERTY)
+           or (nextId = TOK_CONSTRUCTOR) or (nextId = TOK_OPERATOR) then
+          exit;
+      end;
+
       var j := aIndex - 1;
       var steps := 0;
       while (j >= 0) and (steps < 64) do begin

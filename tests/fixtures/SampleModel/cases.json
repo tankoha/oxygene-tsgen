@@ -13,5 +13,10 @@
     "name": "mark-unknown",
     "args": ["--nrt-unknown-policy", "mark-unknown"],
     "expected": "expected/mark-unknown.d.ts"
+  },
+  {
+    "name": "as-written",
+    "args": ["--naming-policy", "as-written"],
+    "expected": "expected/as-written.d.ts"
   }
 ]

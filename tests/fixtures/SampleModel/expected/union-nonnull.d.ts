@@ -3,12 +3,12 @@
 declare namespace SampleModel {
   export type Status = "Active" | "Inactive" | "Pending";
   export interface User {
-    Id: string;
-    DisplayName: string | null;
-    Age: number;
-    IsAdmin: boolean;
-    Notes: string;
-    FirstName: string | null;
-    LastName: string | null;
+    id: string;
+    displayName: string | null;
+    age: number;
+    isAdmin: boolean;
+    notes: string;
+    firstName: string | null;
+    lastName: string | null;
   }
 }

@@ -7,12 +7,12 @@ declare namespace SampleModel {
     Pending = 2,
   }
   export interface User {
-    id: string;
-    displayName: string | null;
-    age: number;
-    isAdmin: boolean;
-    notes: string | null;
-    firstName: string | null;
-    lastName: string | null;
+    Id: string;
+    DisplayName: string | null;
+    Age: number;
+    IsAdmin: boolean;
+    Notes: string | null;
+    FirstName: string | null;
+    LastName: string | null;
   }
 }

@@ -2555,9 +2555,23 @@ unresolvable, proving the diagnostic-and-`unknown` fallback rather than
 a crash or a wrong guess). `UnusedDto` is declared but referenced by
 nothing reachable, proving the BFS filter actually filters instead of
 just falling back to whole-assembly behavior. Two cases (`default`,
-`non-null`) confirm the reachable types (`RoleDto`/`UserDto`/`MetaDto`)
-and the synthesized `Props.ProfileProps` interface both correctly track
+`non-null`) confirm the synthesized `Props.ProfileProps` interface's
+*unannotated* member (`Note`, and `Role`'s reference-typed field) tracks
 `--nrt-unknown-policy`, while `IsAdmin` stays non-nullable under both.
+
+**Correction (2026-08-07, §29): the claim in the previous version of this
+paragraph — that `RoleDto`/`UserDto`/`MetaDto`'s properties "correctly
+track `--nrt-unknown-policy`" — was wrong, and wrong in a way that
+rationalized a real bug instead of catching it.** `RoleDto.Name`,
+`UserDto.Email`, and `MetaDto.Title` are all explicitly annotated `not
+nullable` in this fixture's source — per §21/README's central NRT
+promise ("an explicit annotation always wins regardless of policy"),
+they should never have varied with `--nrt-unknown-policy` at all. That
+they visibly did was the symptom of the scanner bug §29 fixes, not
+confirmation of correct behavior. Caught by an external (Fable5)
+consistency review, not by this fixture doing its job — see §29 for the
+bug, why the `non-null` case specifically couldn't have caught it, and
+the fix.
 
 Verified hands-on before locking in snapshots (same discipline as every
 fixture this session): ran `tsgen --mode inertia` directly, read the
@@ -2841,9 +2855,15 @@ project's standing practice)**:
   same-named page props at runtime in InertiaNetCore
   (`InertiaProps.Merge`, confirmed in the spike). `docs/DESIGN.md`
   §2.6/§7.1/§8.2 need a follow-up edit to describe this instead of the
-  original intersection-type sketch (not done in this pass — flagging
-  it here first, per this project's practice of writing the finding down
-  before editing the design doc it corrects).
+  original intersection-type sketch.
+  **Done, same session, right after this section was written** — the
+  `extends`-based rewrite of §2.6/§7.1/§8.2 landed (English and
+  `DESIGN_jp.md` mirror both), but this flag itself was never updated to
+  say so, leaving it reading as outstanding debt after the edit had
+  already happened. Caught by the §29 Fable5 review, not by re-reading
+  this section — a small instance of the same "update the doc, forget to
+  update the note that pointed at the doc" class of drift the rest of
+  §29 is about.
 - **camelCase key/property-naming gap**: the spike also surfaced,
   incidentally, that InertiaNetCore's default `JsonSerializerOptions`
   camelCases both dictionary keys and POCO property names, so this
@@ -2939,3 +2959,314 @@ eye (both `default.d.ts` and `non-null.d.ts`) to confirm `SharedData`,
 the `extends` clauses, and `SharedUserDto`'s presence in the `InertiaMode`
 namespace are all syntactically valid, sensible TypeScript — not just
 "the diff updated." Full suite: 14/14 pass.
+
+## 28. Fix issue #55: camelCase naming policy, both modes (2026-08-07)
+
+Closes issue-tracker item #55, found incidentally during the §27 Shared
+Data spike: InertiaNetCore's default `JsonSerializerOptions` camelCases
+both dictionary keys and POCO property names, so Page Props output
+emitted verbatim Oxygene-source casing (`User`, `IsAdmin`, ...) didn't
+match the real wire payload (`user`, `isAdmin`, ...). `docs/DESIGN.md`
+§5.1 always described this as a general "simulate the `JsonNamingPolicy`
+setting" concern — not Inertia-specific — but it had never been
+implemented for either mode.
+
+**Scope decisions (asked of the user before implementing)**: apply to
+both `--mode assembly` and `--mode inertia` (one implementation point,
+`DtsEmitter.EmitType`, matches §5.1's original general framing rather
+than treating this as an Inertia-only patch); add it as a new
+`--naming-policy camelCase|as-written` flag, **defaulting to
+`camelCase`** rather than keeping the old as-written behavior as
+default — the old default was the actual bug, not a stylistic choice
+worth preserving by default, and `camelCase` matches what
+ASP.NET Core/`System.Text.Json` themselves default to when a project
+doesn't reconfigure `JsonSerializerOptions`.
+
+**Implementation** (`src/Tsgen/Emit/DtsEmitter.pas`,
+`src/Tsgen/Cli/Program.pas`): new `NamingPolicy = public enum (AsWritten,
+CamelCase)`, an `ApplyNamingPolicy`/`ToCamelCase` helper, threaded
+through `DtsEmitter.Emit`/`EmitType` and applied at both places a JSON
+property name actually gets emitted: `ClassLike` interface members, and
+`FormErrorsLike`'s `Record<'key1' | 'key2', string>` key literals (these
+must stay consistent with each other — `ProfileFormErrors`'s keys
+describe the *same* fields `ProfileProps`'s members do, so both needed
+the same transform or they'd silently disagree). Deliberately NOT
+applied to: type/interface names themselves (`ProfileProps`,
+`SharedData`, etc. are TypeScript-side identifiers, not JSON payload
+keys) or `EnumLike` value names (`System.Text.Json`'s enum string
+conversion is controlled separately, by `JsonStringEnumConverter`'s own
+naming policy parameter, not `PropertyNamingPolicy` — confirmed this is
+a real, separate mechanism, not assumed). The unmapped-type diagnostic
+message still names the as-written source name, not the transformed
+one, since diagnostics should point back to where the user should look
+in their own source.
+
+**`ToCamelCase` is a simplified stand-in, not a port of
+`JsonNamingPolicy.CamelCase.ConvertName`**: it lowercases only the first
+character. Correct for every ordinary PascalCase Oxygene identifier —
+which is the only shape this codebase's own fixtures/DTOs use — but does
+not replicate the real algorithm's acronym-run handling (e.g. a property
+literally named `ID` or `URLPath`). A deliberate, documented v1 gap
+rather than porting that logic now, matching this codebase's existing
+risk tolerance for heuristic limitations (e.g. `InertiaScanner`'s
+short-name collision note, §24.6).
+
+**A second, unrelated bug was found while verifying this fix, and fixed
+alongside it**: `tools/run-tests.ps1`'s snapshot comparison used
+PowerShell's `-eq` operator, which is **case-insensitive for strings by
+default** (`"Id" -eq "id"` is `$true` in PowerShell — confirmed hands-on,
+not assumed). This meant the ENTIRE snapshot suite could never have
+caught a case-only regression, including this very fix: the first
+`tools/run-tests.ps1` run after implementing `--naming-policy` reported
+14/14 PASS even though the actual output was camelCase and every
+committed snapshot was still PascalCase. Caught only because the output
+still "looked green" was suspicious given the size of the change — a
+manual `diff` against a preserved `_actual/` directory (a temporary
+debug copy of the script with its cleanup step disabled) confirmed the
+files genuinely differed while the script still reported PASS. Fixed by
+changing the comparison to `-ceq` (ordinal/case-sensitive). This is the
+kind of bug that specifically hides behind "the tests still pass" — worth
+remembering that a green snapshot suite was never actually verifying
+casing, for the whole lifetime of this test runner (`HANDOFF.md` §15),
+not just for this one fix.
+
+**Fixture**: added an `as-written` case to
+`tests/fixtures/SampleModel/cases.json` (`--naming-policy as-written`)
+to prove the opt-out actually restores the old PascalCase behavior, not
+just that camelCase-by-default works. Regenerated all snapshots (now 6
+fixtures / 15 cases, one new case) with the case-sensitive comparison
+already fixed, then read every changed file's diff by eye — confirmed
+type/interface names stay untouched, only member/property names and
+`FormErrorsLike` key literals change, `SharedData`'s already-lowercase
+floor keys (`flash`/`timestamp`/`errors`) are unaffected (case-insensitive-safe
+no-op through the same code path), and enum value names
+(`Active`/`Inactive`/`Pending` in `SampleModel`) are correctly untouched.
+Full suite: 15/15 pass.
+
+## 29. Fable5 consistency review (2026-08-07): a real NRT-scanner bug, plus doc drift
+
+With a commit/push deadline approaching, asked a background Fable5 agent
+to review the whole project — design phase onward, weighted toward the
+most recently implemented Inertia features (§24-§28) — for internal
+inconsistencies, contradictions between documentation and actual
+behavior, and irrational decisions, the same kind of review this project
+has used twice before early on (§9/§13-era) to catch things the
+implementing model misses in its own work. It found one load-bearing
+bug and several stale cross-references. This section covers the bug;
+the doc fixes were applied directly to `README.md`/`docs/DESIGN.md`
+without a separate writeup (small, mechanical corrections — no new
+information/decision to record beyond "this was stale, now isn't").
+
+**The bug: `NullabilityScanner.IsTypeOpen` mistook a static member's
+`class` keyword for a type declaration.** Oxygene's static-member
+modifiers (`class method`, `class var`, `class property`, `class
+constructor`, `class operator`) reuse the `class` keyword — the same
+token `ScanFile` watches for to detect `TypeName = ... class` type
+declarations. `IsTypeOpen`'s backward walk (stopping only at `;`/
+`begin`/`end`) had no way to tell the two apart: for a type whose
+*first* member after the visibility section header is a `class
+method`/etc. (no semicolon yet since the header itself doesn't end in
+one), the walk sailed straight through that `class` token, back through
+the type's own `class`/visibility tokens, and reached the *enclosing*
+type's own `TypeName = ` equals sign — reporting a second, spurious
+type-open. That extra `inc(depth)` was never matched by a corresponding
+decrement (a static method's own `class` keyword doesn't open a `begin
+...end` block of its own), so `depth` stayed permanently offset by one
+for the rest of the file. Because `currentTypeName`/`typeDepth` are only
+(re)assigned `if String.IsNullOrEmpty(currentTypeName)`, and
+`currentTypeName` was already non-empty from the first (real) type, no
+type declared afterward in the same file ever got its properties/fields
+scanned — every one silently failed the `(depth = typeDepth)` guard
+already added after the §20 nested-type bug, so they degrade to
+`Unknown` rather than corrupting another type's entry. Concretely: in
+`tests/fixtures/InertiaMode/InertiaMode.pas`, the `Inertia` class's
+`class method Render`/`class method Share` (its very first members)
+trip this, and every type declared afterward in that file
+(`RoleDto`/`UserDto`/`MetaDto`/`SharedUserDto`/`Controller`/`Startup`)
+loses NRT scanning for the rest of the file. Any real target codebase
+with an ordinary static helper class ahead of other types in the same
+file — an unremarkable, common Oxygene pattern — hits this too; it's
+not specific to this fixture's shape.
+
+**Why the snapshot suite didn't catch it, and actively hid it**:
+`RoleDto.Name`/`UserDto.Email`/`MetaDto.Title`/`SharedUserDto.Email` are
+all explicitly `not nullable` in the fixture. With their annotations
+lost to the bug, they fell back to genuinely `Unknown`, which
+`--nrt-unknown-policy`'s default (`nullable`) renders as `T | null` —
+wrong, but the `default` case's own committed snapshot had simply
+baked in the wrong (post-bug) output as "expected," so it passed. The
+fixture's `non-null` case — the one CLAUDE.md's own standing rule says
+every NRT fixture needs specifically to distinguish "genuinely Unknown"
+from "a leaked/lost annotation" —*also* couldn't catch it here, for a
+sharper reason than the usual "both render `| null`" case CLAUDE.md
+already documents: under `non-null` policy, `Unknown` renders as bare
+`T`, which is *identical* to what a correctly-recognized `not nullable`
+member renders as. The two cases that exist were exactly the pair that
+happens to agree on this bug's output. `HANDOFF.md` §24.5 additionally
+rationalized the wrong behavior as a passing test's success criterion
+("confirm the reachable types … correctly track
+`--nrt-unknown-policy`") — corrected in §24.5 above, not rewritten
+silently.
+
+**Fix** (`src/Tsgen/Nrt/NullabilityScanner.pas`, `IsTypeOpen`): added a
+forward lookahead — if the token immediately after a candidate `class`
+is `method`/`var`/`property`/`constructor`/`operator`, it's a
+static-member modifier, not a type declaration, and `IsTypeOpen` returns
+`false` without doing the backward walk at all. `TOK_METHOD`/`TOK_VAR`
+reuse the exact same `Token.TI_method`/`Token.TI_var` constants already
+confirmed working in `InertiaScanner.pas`; `TOK_PROPERTY` was already
+declared in this file; `TOK_CONSTRUCTOR`/`TOK_OPERATOR`
+(`Token.TI_constructor`/`Token.TI_operator`) were new and confirmed by
+successful compilation, not assumed. Deliberately did NOT change the
+backward-walk's stop-token set itself (adding `public`/`private` as stop
+tokens was considered and rejected — those keywords appear both as a
+type's own visibility modifier, directly before `class`, and as a
+standalone member-visibility section header, and are not
+distinguishable by token ID alone without the exact context this
+lookahead already handles more precisely).
+
+**Verification**: rebuilt (confirming the two new token constants
+compile), ran the full suite *before* touching any snapshot — 14/15
+passed, with `InertiaMode/default` the only failure, isolating the
+fix's effect to exactly the fixture that exercises the pattern.
+`InertiaMode/non-null` already passed unchanged (consistent with the
+mechanism above — that case couldn't distinguish the bug from correct
+behavior either way). Regenerated snapshots, then read
+`InertiaMode/expected/default.d.ts` by eye: `name`/`email`/`title` now
+correctly render without `| null` regardless of policy, while
+`role: InertiaMode.RoleDto | null` (genuinely unannotated) still
+correctly tracks the policy. Full suite: 15/15 pass.
+
+No new fixture added — `InertiaMode`'s existing `Inertia` class already
+exercises the exact trigger pattern (`class method` as a type's first
+member) and now genuinely regression-tests it, since `default`'s
+snapshot would fail again if this regressed.
+
+## 30. Fable5 review, Findings 6-9 (2026-08-07, same day, before the commit deadline)
+
+With time still available before the day's commit/push window, addressed
+the remaining four (lower-severity) findings from the §29 review rather
+than leaving them recorded-but-deferred.
+
+**Finding 6 (bookkeeping)**: §27's own text said the `docs/DESIGN.md`
+§2.6/§7.1/§8.2 `extends`-rewrite was "not done in this pass" — but it
+*was* done, later in that same session, and the flag was just never
+updated to say so. Fixed by editing the flag in place (§27 above) rather
+than treating it as new work.
+
+**Finding 7a (real bug, fixed): a discovered Shared Data field can
+collide with `SharedData`'s own hardcoded floor keys after the
+naming-policy transform.** E.g. a target app registering
+`shared['Flash'] := ...` via `AddInertiaSharedData(...)` would, under
+the default `camelCase` policy, produce a second `flash` member
+alongside `SharedData`'s own framework-injected `flash: Record<string,
+string>` — a TypeScript "duplicate identifier" compile error in the
+generated `.d.ts`, since interface members must be unique within one
+declaration (unlike the `extends`-collision case between a page's Props
+and `SharedData`, which is a *different*, deliberately-kept compile
+error per §27). Fixed in `DtsEmitter.EmitType`'s `ClassLike` branch: a
+`HashSet<String>` tracks names already emitted for the *current*
+interface (post-naming-policy-transform); a later member whose
+transformed name repeats an earlier one is skipped and reported via
+`aDiagnostics.AddWarning(...)` instead of emitted, keeping the output
+always-valid TypeScript. Deliberately scoped to one `EmitType` call (one
+interface's own `Members` list) — not extended across the `extends`
+boundary, which stays a compile error on purpose. Since floor keys are
+added to `SharedData.Members` before any discovered field
+(`InertiaIrBuilder.Build`), "skip the later duplicate" also happens to
+match InertiaNetCore's real runtime precedence for this exact case: the
+spike (§27) found `Response.GetFinalProps` applies `AddFlash(...)`/
+`AddTimeStamp()` *after* merging in registered shared data, so the
+framework-injected value overwrites a same-named registered field at
+runtime too — not a coincidence chosen for convenience, verified against
+the same spike finding §27 already relied on.
+
+Added a real regression case for this rather than trusting the reasoning
+alone: `tests/fixtures/InertiaMode/InertiaMode.pas`'s `Startup.Configure`
+now also registers `shared['Flash'] := 'collides-with-floor-key'`.
+Rebuilt and ran the suite *before* touching snapshots — confirmed the
+diagnostic fires (`duplicate member "flash" on SharedData after
+naming-policy transform (source name "Flash")`) and that
+`InertiaMode/default`/`non-null` still **passed unchanged**, proving the
+collision is silently and safely dropped from output rather than
+corrupting it (diagnostics aren't part of the compared `.d.ts`, so a
+correctly-handled collision changes nothing in the snapshot — the
+absence of a snapshot diff here is itself the confirmation the fix
+works, not a sign nothing happened).
+
+**Finding 7b (investigated, no code change needed — the existing
+behavior turned out already correct)**: the review asked whether
+`SharedData`'s three floor keys (`flash`/`timestamp`/`errors`, always
+lowercase) staying lowercase under `--naming-policy as-written` was
+actually a hidden inconsistency, given `as-written` reverts every other
+member back to Oxygene source casing. Worked through why it isn't: (1)
+`as-written` has no Oxygene source declaration to preserve the casing
+*of* for these three — they're synthetic, never scanned from real
+source, so "as written" is meaningless for them; the tool's own
+consistent behavior is "always their real wire name." (2) Even setting
+that aside, `DtsEmitter`'s `camelCase` transform only lowercases a
+member's *first character* — a no-op on an already-all-lowercase single
+word like `flash`/`timestamp`/`errors` — so this is unaffected by
+*either* naming-policy value regardless, for any realistic
+`JsonSerializerOptions.DictionaryKeyPolicy` an app might configure
+(`None` or `CamelCase` both leave these three exact strings unchanged;
+only a policy that *uppercases* an already-lowercase key — which no
+built-in `JsonNamingPolicy` does — would disagree). Documented this
+reasoning directly in `InertiaIrBuilder.pas` next to the floor-key
+construction rather than leaving it as an unstated assumption, since the
+review was right that it hadn't been stated anywhere before.
+`tests/fixtures/InertiaMode/expected/as-written.d.ts` (new, see Finding
+9 below) now shows this directly: `flash`/`timestamp`/`errors` stay
+lowercase while `Auth`/`AppName`/`Flash` revert to their as-written
+Oxygene casing in the same interface.
+
+**Finding 7 (the `errors`-key type-representation tension): documented,
+not fixed.** `SharedData.errors: Record<string, string>` and each page's
+`XxxFormErrors = Partial<Record<'field1' | 'field2', string>>` (§26)
+both describe the same runtime payload key, in two incompatible shapes.
+Not resolved this round — `SharedData` is one interface shared by every
+page while `XxxFormErrors` is page-specific, and `Record<string,
+string>`'s implicit index signature isn't cleanly narrowable to a
+fixed-key `Partial<Record<...>>` as a TypeScript interface-member
+override, so reconciling this is a real design question (which
+representation should win, or whether they should stay separate with a
+documented relationship) rather than something to decide unilaterally
+under a same-day commit deadline. Flagged in code
+(`InertiaIrBuilder.pas`, next to `errorsMember`) and here so it isn't
+lost.
+
+**Finding 8 (real gap, fixed): enum-valued CLI flags accepted any
+unrecognized value and silently fell through to a default**, instead of
+erroring — an inconsistency with the missing-*value* case §25 already
+fixed, and a sharper problem given §28 made `--naming-policy`'s default
+the behavior-changing one: a typo like `--naming-policy aswritten`
+previously silently produced `camelCase` output, the exact opposite of
+what the flag was being used to opt out of. Fixed in `Program.pas`: each
+of `--enum-style`, `--nrt-unknown-policy`, `--mode`, `--naming-policy`
+now explicitly matches its known literal values and sets a new
+`invalidFlag`/`invalidValue`/`invalidAllowedValues` sentinel (parallel
+to the existing `missingValueFor` one) on anything else, checked right
+after the parse loop: `Error: --flag does not accept "value" -- valid
+values are: a, b, c` (exit code 1). Verified hands-on, not just by
+inspection: `tsgen generate --assembly ... --out ... --naming-policy
+bogus` and `--mode bogus` both now print the clean error and exit 1
+(previously both would have silently run with a default).
+
+**Finding 9 (test-coverage gap, fixed)**: §28's stated invariant —
+`ClassLike` member names and `FormErrorsLike` key literals must transform
+consistently under the same naming policy — was only snapshot-tested via
+`SampleModel`'s `as-written` case, which has no `FormErrorsLike` type at
+all (assembly mode). Added `tests/fixtures/InertiaMode/cases.json`'s own
+`as-written` case (`--mode inertia --naming-policy as-written`), giving
+the invariant real two-sided coverage. Read the resulting
+`expected/as-written.d.ts` by eye: `ProfileFormErrors` correctly reads
+`Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note', string>>`
+(PascalCase, matching `ProfileProps`'s own reverted member casing) rather
+than staying camelCase.
+
+**Verification for the whole section**: rebuilt after each change
+(catching two new token-adjacent details immediately via compilation —
+nothing guessed), ran the full suite before touching any snapshot to
+confirm each change's actual effect first, then regenerated and
+read every changed `.d.ts` by eye. Final state: 6 fixtures, **16/16
+cases pass**.

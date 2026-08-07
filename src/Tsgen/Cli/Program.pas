@@ -17,7 +17,7 @@ type
     class method Main(args: array of String): Int32;
     begin
       if (args.Length = 0) or (args[0] <> 'generate') then begin
-        writeLn('Usage: tsgen generate --assembly <path.dll> --source <dir> --out <dir> [--mode assembly|inertia] [--enum-style numeric|union] [--nrt-unknown-policy nullable|non-null|mark-unknown]');
+        writeLn('Usage: tsgen generate --assembly <path.dll> --source <dir> --out <dir> [--mode assembly|inertia] [--enum-style numeric|union] [--nrt-unknown-policy nullable|non-null|mark-unknown] [--naming-policy camelCase|as-written]');
         exit(1);
       end;
 
@@ -27,6 +27,15 @@ type
       var chosenEnumStyle := EnumStyle.Numeric;
       var unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
       var inertiaMode := false;
+      {
+        Default matches System.Text.Json's own default
+        (JsonNamingPolicy.CamelCase is what ASP.NET Core Web API /
+        InertiaNetCore use unless a project explicitly reconfigures
+        JsonSerializerOptions), not "as written" -- see HANDOFF.md §28
+        for why the previous as-written-always behavior was a real bug,
+        not just a stylistic default.
+      }
+      var chosenNamingPolicy := NamingPolicy.CamelCase;
 
       var i: Int32 := 1;
       var missingValueFor: String := nil;
@@ -39,7 +48,24 @@ type
         a self-review, not by any test -- no fixture exercises malformed
         CLI invocations, only malformed/edge-case Oxygene source.
       }
-      while (i < args.Length) and (missingValueFor = nil) do begin
+      var invalidFlag: String := nil;
+      var invalidValue: String := nil;
+      var invalidAllowedValues: String := nil;
+      {
+        Every enum-valued flag below rejects a value that isn't one of
+        its exact literal options, rather than silently falling through
+        to a default -- found missing by a Fable5 consistency review
+        (HANDOFF.md §29/§30): the missing-value guard above (added §25)
+        only covered a flag with NO value at all; a *typo'd* value (e.g.
+        "--naming-policy aswritten") previously fell through to the
+        else-branch default silently, which is exactly the failure
+        --naming-policy as-written exists to let a user opt OUT of --
+        i.e. a typo in the opt-out flag silently produced the opposite
+        of what was asked for. Same asymmetric-rigor pattern §25 already
+        named and fixed for missing values; this closes the matching gap
+        for wrong values.
+      }
+      while (i < args.Length) and (missingValueFor = nil) and (invalidFlag = nil) do begin
         var a := args[i];
         if a = '--assembly' then begin
           inc(i);
@@ -56,29 +82,57 @@ type
         else if a = '--enum-style' then begin
           inc(i);
           if i < args.Length then begin
-            if args[i] = 'union' then chosenEnumStyle := EnumStyle.StringUnion
-            else chosenEnumStyle := EnumStyle.Numeric;
+            if args[i] = 'numeric' then chosenEnumStyle := EnumStyle.Numeric
+            else if args[i] = 'union' then chosenEnumStyle := EnumStyle.StringUnion
+            else begin
+              invalidFlag := a; invalidValue := args[i]; invalidAllowedValues := 'numeric, union';
+            end;
           end
           else missingValueFor := a;
         end
         else if a = '--nrt-unknown-policy' then begin
           inc(i);
           if i < args.Length then begin
-            if args[i] = 'non-null' then unknownPolicy := NrtUnknownPolicy.TreatAsNonNull
+            if args[i] = 'nullable' then unknownPolicy := NrtUnknownPolicy.TreatAsNullable
+            else if args[i] = 'non-null' then unknownPolicy := NrtUnknownPolicy.TreatAsNonNull
             else if args[i] = 'mark-unknown' then unknownPolicy := NrtUnknownPolicy.MarkUnknown
-            else unknownPolicy := NrtUnknownPolicy.TreatAsNullable;
+            else begin
+              invalidFlag := a; invalidValue := args[i]; invalidAllowedValues := 'nullable, non-null, mark-unknown';
+            end;
           end
           else missingValueFor := a;
         end
         else if a = '--mode' then begin
           inc(i);
-          if i < args.Length then inertiaMode := (args[i] = 'inertia') else missingValueFor := a;
+          if i < args.Length then begin
+            if args[i] = 'assembly' then inertiaMode := false
+            else if args[i] = 'inertia' then inertiaMode := true
+            else begin
+              invalidFlag := a; invalidValue := args[i]; invalidAllowedValues := 'assembly, inertia';
+            end;
+          end
+          else missingValueFor := a;
+        end
+        else if a = '--naming-policy' then begin
+          inc(i);
+          if i < args.Length then begin
+            if args[i] = 'camelCase' then chosenNamingPolicy := NamingPolicy.CamelCase
+            else if args[i] = 'as-written' then chosenNamingPolicy := NamingPolicy.AsWritten
+            else begin
+              invalidFlag := a; invalidValue := args[i]; invalidAllowedValues := 'camelCase, as-written';
+            end;
+          end
+          else missingValueFor := a;
         end;
         inc(i);
       end;
 
       if missingValueFor <> nil then begin
         writeLn('Error: ' + missingValueFor + ' requires a value.');
+        exit(1);
+      end;
+      if invalidFlag <> nil then begin
+        writeLn('Error: ' + invalidFlag + ' does not accept "' + invalidValue + '" -- valid values are: ' + invalidAllowedValues);
         exit(1);
       end;
 
@@ -118,7 +172,7 @@ type
       else
         ir := IrBuilder.Build(raw, nullability);
 
-      var dts := DtsEmitter.Emit(ir, chosenEnumStyle, unknownPolicy, diagnostics);
+      var dts := DtsEmitter.Emit(ir, chosenEnumStyle, unknownPolicy, chosenNamingPolicy, diagnostics);
 
       if not Directory.Exists(outDir) then
         Directory.CreateDirectory(outDir);

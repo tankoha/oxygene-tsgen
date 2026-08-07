@@ -11,6 +11,23 @@ type
   EnumStyle = public enum (Numeric, StringUnion);
 
   {
+    docs/DESIGN.md §5.1 always described this as a general "simulate the
+    JsonNamingPolicy setting" concern, applicable regardless of --mode --
+    it was simply never implemented for either mode until now (found via
+    the Inertia Shared Data spike, HANDOFF.md §27/§28: InertiaNetCore's
+    default JsonSerializerOptions camelCases both dictionary keys and
+    POCO property names, so Page Props output emitted verbatim
+    Oxygene-source casing didn't match the real wire payload). Only
+    affects object member/property names and FormErrorsLike's Record<>
+    key literals -- NOT type names (interface/type identifiers are a
+    TypeScript-side choice, not a JSON property) and NOT enum value names
+    (System.Text.Json's enum string conversion is controlled separately,
+    by JsonStringEnumConverter's own naming policy, not
+    PropertyNamingPolicy).
+  }
+  NamingPolicy = public enum (AsWritten, CamelCase);
+
+  {
     Single-file emitter for the MVP (docs/DESIGN.md §7.3 also describes a
     split-file / ES-module layout, deferred -- see HANDOFF.md §11).
 
@@ -51,8 +68,38 @@ type
       result := (aKind = NullabilityKind.Unknown) and (aUnknownPolicy = NrtUnknownPolicy.MarkUnknown);
     end;
 
-    class method EmitType(aSb: StringBuilder; aType: IrTypeLite; aEnumStyle: EnumStyle; aUnknownPolicy: NrtUnknownPolicy; aPad: String;
-                           aUnmapped: Dictionary<String, List<String>>; aUnmappedOrder: List<String>; aKnownTypes: HashSet<String>);
+    {
+      A simplified, ASCII-first-letter-only stand-in for
+      System.Text.Json's real JsonNamingPolicy.CamelCase.ConvertName:
+      lowercases just the first character. Correct for every ordinary
+      PascalCase Oxygene identifier (the common case, and the only shape
+      this codebase's own fixtures/DTOs use), but does NOT replicate the
+      real algorithm's acronym-run handling (e.g. a property literally
+      named "ID" or "URLPath") -- a deliberate, accepted v1 gap rather
+      than porting that logic, same risk-tolerance as this codebase's
+      other documented heuristic limitations (e.g. InertiaScanner's
+      short-name collision note).
+    }
+    class method ToCamelCase(aName: String): String;
+    begin
+      if String.IsNullOrEmpty(aName) then
+        result := aName
+      else
+        result := Char.ToLowerInvariant(aName[0]).ToString() + aName.Substring(1);
+    end;
+
+    class method ApplyNamingPolicy(aName: String; aNamingPolicy: NamingPolicy): String;
+    begin
+      if aNamingPolicy = NamingPolicy.CamelCase then
+        result := ToCamelCase(aName)
+      else
+        result := aName;
+    end;
+
+    class method EmitType(aSb: StringBuilder; aType: IrTypeLite; aEnumStyle: EnumStyle; aUnknownPolicy: NrtUnknownPolicy;
+                           aNamingPolicy: NamingPolicy; aPad: String;
+                           aUnmapped: Dictionary<String, List<String>>; aUnmappedOrder: List<String>; aKnownTypes: HashSet<String>;
+                           aDiagnostics: DiagnosticList);
     begin
       if aType.Kind = IrTypeKindLite.EnumLike then begin
         if aEnumStyle = EnumStyle.Numeric then begin
@@ -86,7 +133,7 @@ type
         else
           for i: Int32 := 0 to aType.Members.Count - 1 do begin
             if i > 0 then keysSb.Append(' | ');
-            keysSb.Append('''' + aType.Members[i].Name + '''');
+            keysSb.Append('''' + ApplyNamingPolicy(aType.Members[i].Name, aNamingPolicy) + '''');
           end;
         aSb.AppendLine(aPad + 'export type ' + aType.Name + ' = Partial<Record<' + keysSb.ToString() + ', string>>;');
       end
@@ -109,6 +156,28 @@ type
           end;
         end;
         aSb.AppendLine(header + ' {');
+        {
+          Tracks names already emitted for THIS interface, after the
+          naming-policy transform -- e.g. a discovered Shared Data field
+          (HANDOFF.md §27) whose transformed name collides with one of
+          SharedData's own hardcoded floor keys ("flash"/"timestamp"/
+          "errors"). Deliberately scoped to one EmitType call (one
+          interface's own Members list), NOT across the `extends`
+          boundary between a page's Props and Props.SharedData -- that
+          cross-interface collision is meant to surface as a TypeScript
+          compile error instead (see the BaseTypeNames comment above);
+          only a collision within a single interface's own member list
+          would otherwise silently produce invalid duplicate-property
+          TypeScript. Since floor keys are added to Members before any
+          discovered field (InertiaIrBuilder.Build), skipping the later
+          duplicate here also matches InertiaNetCore's real runtime
+          precedence for this specific case: Response.GetFinalProps
+          applies AddFlash(...)/AddTimeStamp() (which write "flash"/
+          "timestamp") AFTER merging in registered shared data, so the
+          framework-injected value wins over a same-named registered
+          field at runtime too (confirmed in the §27 spike).
+        }
+        var emittedNames := new HashSet<String>;
         for each m in aType.Members do begin
           var tsType := TypeMapper.MapTypeRef(m.TypeRef, aKnownTypes);
           if tsType = 'unknown' then begin
@@ -124,14 +193,29 @@ type
           if ResolveNullableSuffix(m.Nullability, aUnknownPolicy) then opt := ' | null';
           var unknownComment := '';
           if ShouldMarkUnknown(m.Nullability, aUnknownPolicy) then unknownComment := ' // nrt: unknown';
-          aSb.AppendLine(aPad + '  ' + m.Name + ': ' + tsType + opt + ';' + unknownComment);
+          {
+            The unmapped-type diagnostic above deliberately still names
+            m.Name (the as-written Oxygene source name), not the
+            naming-policy-transformed one -- diagnostics point back to
+            where the user should look in their own source, not to the
+            emitted JSON/TS name.
+          }
+          var emittedName := ApplyNamingPolicy(m.Name, aNamingPolicy);
+          if emittedNames.Contains(emittedName) then begin
+            aDiagnostics.AddWarning('duplicate member "' + emittedName + '" on ' + aType.Name +
+              ' after naming-policy transform (source name "' + m.Name + '") -- keeping the first occurrence, skipping this one, to avoid invalid duplicate TypeScript properties');
+            continue;
+          end;
+          emittedNames.Add(emittedName);
+          aSb.AppendLine(aPad + '  ' + emittedName + ': ' + tsType + opt + ';' + unknownComment);
         end;
         aSb.AppendLine(aPad + '}');
       end;
     end;
 
   public
-    class method Emit(aAssembly: IrAssemblyLite; aEnumStyle: EnumStyle; aUnknownPolicy: NrtUnknownPolicy; aDiagnostics: DiagnosticList): String;
+    class method Emit(aAssembly: IrAssemblyLite; aEnumStyle: EnumStyle; aUnknownPolicy: NrtUnknownPolicy;
+                       aNamingPolicy: NamingPolicy; aDiagnostics: DiagnosticList): String;
     begin
       var sb := new StringBuilder;
       sb.AppendLine('// AUTO-GENERATED by oxygene-tsgen. Do not edit by hand.');
@@ -188,7 +272,7 @@ type
         end;
 
         for each t in types do
-          EmitType(sb, t, aEnumStyle, aUnknownPolicy, pad, unmapped, unmappedOrder, knownTypes);
+          EmitType(sb, t, aEnumStyle, aUnknownPolicy, aNamingPolicy, pad, unmapped, unmappedOrder, knownTypes, aDiagnostics);
 
         if hasNs then sb.AppendLine('}');
       end;
