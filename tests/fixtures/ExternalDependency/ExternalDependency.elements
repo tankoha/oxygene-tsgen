@@ -1,0 +1,43 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <RootNamespace>ExternalDependency</RootNamespace>
+    <ProjectGuid>{7B8C9D0E-1F2A-4B3C-9D4E-5F6789ABCDEF}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AssemblyName>ExternalDependency</AssemblyName>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <TargetFramework>.NETStandard</TargetFramework>
+    <Mode>Echoes</Mode>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <OutputPath>.\Bin\Release</OutputPath>
+    <CpuType>anycpu</CpuType>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Echoes">
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      EBuild's ProjectReference could not be resolved standalone (outside
+      a .sln context) when this fixture was written, so this instead
+      points at Vendor\VendorLib.elements's own build output directly.
+      tools\run-tests.ps1 builds any "Vendor\*.elements" subproject before
+      building this fixture's own top-level project, so VendorLib.dll is
+      always fresh, then Private=True copies it into THIS project's own
+      Bin\Release next to ExternalDependency.dll, reproducing "target
+      assembly's dependency sits in the same folder, not the .NET runtime
+      directory" (M3-dts-validation.md §3.1) from source, never a
+      committed (license-prohibited, see oxygene-tsgen's CLAUDE.md)
+      prebuilt binary.
+    -->
+    <Reference Include="VendorLib">
+      <HintPath>Vendor\Bin\Release\VendorLib.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ExternalDependency.pas" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath)\RemObjects Software\Elements\RemObjects.Elements.targets" />
+</Project>

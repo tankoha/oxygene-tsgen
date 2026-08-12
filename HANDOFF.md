@@ -3270,3 +3270,158 @@ nothing guessed), ran the full suite before touching any snapshot to
 confirm each change's actual effect first, then regenerated and
 read every changed `.d.ts` by eye. Final state: 6 fixtures, **16/16
 cases pass**.
+
+## 31. `AssemblyLoader.Load` dependency resolution + crash resilience (2026-08-13)
+
+**Trigger**: `TeaTimeTracker/reports/M3-dts-validation.md` §3.1 — running
+`tsgen generate --mode inertia` against the real `TeaTimeTracker.dll`
+(the first time tsgen was ever pointed at a multi-assembly real app,
+rather than a self-contained fixture) crashed with an unhandled
+`System.IO.FileNotFoundException` while resolving
+`Microsoft.AspNetCore.Mvc.ViewFeatures` inside `t.IsClass` — no `.d.ts`
+was written at all. Two separate root causes, both in
+`src/Tsgen/Loading/AssemblyLoader.pas`:
+
+1. `Load`'s `PathAssemblyResolver` search paths were only ever "the .NET
+   runtime directory tsgen.exe itself is hosted on" + "the single target
+   DLL path" — never the target's own folder (so a sibling dependency DLL
+   like `InertiaNetCore.dll`, sitting right next to `TeaTimeTracker.dll`,
+   was unreachable) and never any ASP.NET Core shared framework (so
+   `Microsoft.AspNetCore.Mvc.Controller`, the base class every MVC
+   controller in the app inherits from, was unreachable either).
+2. The `for each t in asm.GetTypes() do` loop had no per-type
+   `try`/`except` at all, so one type's unresolvable base type crashed the
+   entire process instead of just that type being skipped — a direct
+   violation of this project's own "pipeline stages report problems via
+   `Tsgen.Diagnostics`, not direct console I/O / unhandled exceptions"
+   rule (`CLAUDE.md`).
+
+**Fix, both in `AssemblyLoader.pas`**:
+
+- `Load` now builds its resolver path list from four sources, added in
+  priority order via a `Dictionary<String, String>` keyed by lowercase
+  file name (`AddResolverFile`/`AddResolverDir` — first-registered wins,
+  so a higher-priority source is never silently shadowed by a
+  lower-priority one shipping a same-named DLL): (1) the target assembly
+  itself, (2) every other `*.dll` in the target's own folder, (3) each
+  shared framework the target declares via its own
+  `<assembly>.runtimeconfig.json` (`runtimeOptions.framework` singular
+  and/or `.frameworks` array, both handled — `ParseRuntimeConfigFrameworks`,
+  parsed with `System.Text.Json.JsonDocument`; returns an empty list, not
+  an error, when the file doesn't exist at all, since library-only
+  assemblies — every existing fixture — never get one, only executables
+  do), resolved to `C:\Program Files\dotnet\shared\<name>\<version>\` with
+  a same-major-version fallback to the highest installed version when the
+  exact one isn't present (`PickBestFrameworkVersionDir`, via
+  `System.Version` comparison) rather than failing outright, and (4) the
+  original runtime-directory addition, kept as the lowest-priority
+  fallback for base BCL types (unchanged behavior for that part).
+- The type-enumeration loop now wraps each iteration's body in its own
+  `try`/`except`: a type whose base-type/property/field resolution still
+  throws (e.g. a genuinely unresolvable third-party dependency this tool
+  has no way to locate) is skipped individually, with
+  `aDiagnostics.AddWarning('skipped type "..." ... ' + E.GetType().Name +
+  ': ' + E.Message + ...)` naming the type and the underlying exception,
+  plus a trailing aggregate count warning
+  (`'failed to resolve N type(s) due to unresolvable dependencies...'`) —
+  matching the existing `skippedCount` aggregate-warning pattern already
+  used for the filter-based skip case (non-public/nested/generic/
+  non-class-non-enum), now sitting alongside it as a second, distinct
+  counter (`failedCount`) so the two skip reasons are never conflated in
+  diagnostics. `typeLabel` (used in the warning) is captured as the very
+  first statement inside the `try`, defended by its own default value
+  (`'(name unavailable)'`) in case even `t.FullName` itself is what
+  throws.
+
+**Design choice not obviously forced, recorded for future reference**:
+resolver-path priority is target-assembly-folder-first, shared-framework
+second, hosting-runtime-directory last. This matters if a same-named DLL
+ever exists in more than one of these locations (e.g. a self-contained
+deployment carrying its own `System.*.dll` copies) — the app's own build
+output should win over the ambient framework, which should win over
+whatever runtime happens to be hosting tsgen.exe itself. Not currently
+exercised by any fixture (TeaTimeTracker is framework-dependent, not
+self-contained, so no collision exists to test against); worth a fixture
+if this ever becomes a real problem.
+
+**Regression fixture** (`tests/fixtures/ExternalDependency/`): covers
+root cause 1's "same-folder dependency DLL" half only — a
+`VendorLib.elements` library (`Vendor/` subfolder) defines `VendorBase`
+with one property; the fixture's own `ExternalDependency.pas` defines
+`Widget = public class(VendorBase)`, so resolving `Widget`'s base type
+requires `VendorLib.dll` to be found next to `ExternalDependency.dll`,
+which is exactly what root cause 1 made impossible before this fix.
+`EBuild`'s `ProjectReference` item did not resolve when tried standalone
+outside a `.sln` context, so `ExternalDependency.elements` instead
+references `Vendor\Bin\Release\VendorLib.dll` by prebuilt-DLL `HintPath`
+with `Private=True` (copies it into `ExternalDependency`'s own
+`Bin\Release`, replicating the same-folder shape); `tools/run-tests.ps1`
+was extended with a small pre-build step (build any `Vendor\*.elements`
+found under a fixture directory before that fixture's own top-level
+project) so `VendorLib.dll` is always rebuilt fresh from source, never a
+committed (license-prohibited) binary. Confirmed the fixture's `Widget`
+interface includes the inherited `vendorId` member
+(`vendorId: string | null` — falls back to the `--nrt-unknown-policy`
+default since `VendorLib.pas` isn't part of `--source`'s scan, so
+`OxygeneSourceScanProvider` has no opinion on it and `String` isn't a
+`ValueTypeDefaultProvider` type either; this is the technically-correct
+behavior for a real third-party dependency's own unannotated member, not
+a bug). Root cause 1's *shared-framework* half and root cause 2 (the
+per-type `try`/`except`) have no fixture — library-only test assemblies
+never get a `.runtimeconfig.json` to point at a shared framework in the
+first place, and root cause 2 only fires for exactly the kind of
+resolution failure root cause 1's fix is meant to eliminate — so both were
+instead verified by hand against the real `TeaTimeTracker.dll` (below).
+
+**Real-app acceptance run** (the actual M3 blocker this task exists to
+fix):
+
+```
+tsgen generate --assembly ...\TeaTimeTracker\Bin\Release\TeaTimeTracker.dll --source ...\TeaTimeTracker\src\TeaTimeTracker --out <scratchpad> --mode inertia
+```
+
+No longer crashes (exit code 0); full stderr:
+
+```
+Loading assembly: ...\TeaTimeTracker\Bin\Release\TeaTimeTracker.dll
+Loaded 12 type(s).
+Scanning source for NRT info: ...\TeaTimeTracker\src\TeaTimeTracker
+Found nullability info for 7 member(s).
+Scanning source for Inertia.Render call sites: ...\TeaTimeTracker\src\TeaTimeTracker
+Found 5 Inertia.Render call site(s) and 1 shared-data field(s).
+Wrote <scratchpad>\index.d.ts
+Warning: skipped 5 non-public/nested/generic/unsupported-kind type(s); their members will not appear in the output.
+Warning: could not resolve type of Inertia props key "Records" on props -- emitting "unknown" for this field
+Warning: could not resolve type of Inertia props key "Count" on props -- emitting "unknown" for this field
+Warning: no type mapping for TeaTimeTracker.Models.Rating, emitting "unknown" (1 member(s), e.g. TastingRecordDetail.Rating)
+Warning: no type mapping for System.DateOnly, emitting "unknown" (1 member(s), e.g. TastingRecordDetail.BrewedAt)
+Warning: no type mapping for (unresolved), emitting "unknown" (2 member(s), e.g. IndexProps.Records)
+```
+
+Zero "failed to resolve" warnings — every type in `TeaTimeTracker.dll`,
+including its `Controller`-derived MVC controllers, now resolves cleanly
+via the new same-folder (`InertiaNetCore.dll`) + shared-framework
+(`Microsoft.AspNetCore.App` 10.0.10, read from
+`TeaTimeTracker.runtimeconfig.json`) resolver paths. The `Records`/`Count`
+(`Integer` alias)/`Rating`/`DateOnly` unknowns and the
+`BeverageType`/`ThemeMode` `| null` nullability are exactly the
+already-known gaps `docs/DESIGN.md` §7 tasks 1-4 exist to close — this
+task's job was only to make the real DLL loadable at all, which it now
+is. Note the `.d.ts` was written to a scratchpad directory, not
+`TeaTimeTracker/frontend/src/types/generated/`, per this session's
+instructions (TeaTimeTracker repo writes out of scope) and separately
+observed: `Controller.Profile`-shaped methods that appear twice in
+`TeaTimeTracker`'s source (once for `GET`, once for `POST` to the same
+Inertia page) currently produce two separate, identical
+`EditProps`/`ThemeProps`/`EditFormErrors`/`ThemeFormErrors` declarations
+in the output (harmless — TypeScript allows re-declaring an identical
+interface — but redundant). Pre-existing `InertiaScanner` behavior, not
+part of this task's scope; noted here in case it's worth a future
+`Dictionary`-by-component-name dedup pass in `InertiaIrBuilder.Build`.
+
+**Verification**: `tools/run-tests.ps1` (no `-UpdateSnapshots` first, to
+confirm the change didn't alter any existing fixture's output — it
+didn't, `git diff` on every pre-existing `expected/*.d.ts` was empty)
+followed by a `-UpdateSnapshots` run to capture the new
+`ExternalDependency` fixture, then a final clean run: **17/17 cases
+pass** (was 16/16 before this task's new fixture).

@@ -52,6 +52,22 @@ Get-ChildItem $fixturesRoot -Directory | ForEach-Object {
         return
     }
 
+    # Some fixtures need a real second assembly to exist alongside their
+    # own DLL (e.g. ExternalDependency, which regression-tests
+    # AssemblyLoader.Load resolving a same-folder dependency DLL --
+    # HANDOFF.md §31 / M3-dts-validation.md §3.1). Such a fixture's own
+    # .elements project references that dependency by prebuilt-DLL
+    # HintPath rather than EBuild's ProjectReference (which didn't resolve
+    # standalone outside a .sln when tried), so its "Vendor" subproject
+    # must be built first, here, every run -- its DLL is gitignored build
+    # output like every other fixture DLL, never committed.
+    $vendorElementsFiles = Get-ChildItem (Join-Path $fixtureDir.FullName "Vendor") -Filter "*.elements" -ErrorAction SilentlyContinue
+    foreach ($vendorFile in $vendorElementsFiles) {
+        Write-Host "==> Building $($fixtureDir.Name)'s dependency project $($vendorFile.Name)"
+        & $EBuild $vendorFile.FullName /Configuration:Release | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Building $($fixtureDir.Name)'s dependency project $($vendorFile.Name) failed" }
+    }
+
     Write-Host "==> Building fixture $($fixtureDir.Name)"
     & $EBuild $elementsFile.FullName /Configuration:Release | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Building fixture $($fixtureDir.Name) failed" }

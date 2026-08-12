@@ -1,0 +1,7 @@
+[
+  {
+    "name": "default",
+    "args": [],
+    "expected": "expected/default.d.ts"
+  }
+]
