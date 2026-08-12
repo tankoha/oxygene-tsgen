@@ -123,6 +123,8 @@ type
         result := MakeSimpleTypeRef('System.' + aWrittenName)
       else if (aWrittenName = 'DateTime') or (aWrittenName = 'DateTimeOffset') or (aWrittenName = 'Guid') then
         result := MakeSimpleTypeRef('System.' + aWrittenName)
+      else if (aWrittenName = 'DateOnly') or (aWrittenName = 'TimeOnly') then
+        result := MakeSimpleTypeRef('System.' + aWrittenName)
       {
         Oxygene's own "more Pascal-ish" standard-library aliases for
         exactly the same CLR value types already recognized by their

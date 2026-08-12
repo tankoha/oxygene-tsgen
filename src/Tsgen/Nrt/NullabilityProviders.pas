@@ -104,6 +104,7 @@ type
         (aClrTypeName = 'System.Int64') or (aClrTypeName = 'System.UInt64') or
         (aClrTypeName = 'System.Single') or (aClrTypeName = 'System.Double') or (aClrTypeName = 'System.Decimal') or
         (aClrTypeName = 'System.DateTime') or (aClrTypeName = 'System.DateTimeOffset') or
+        (aClrTypeName = 'System.DateOnly') or (aClrTypeName = 'System.TimeOnly') or
         (aClrTypeName = 'System.Guid');
     end;
   end;

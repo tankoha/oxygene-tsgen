@@ -3574,3 +3574,63 @@ distinction, so no separate non-null-policy fixture case was needed just
 for this addition).
 
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.
+
+## 34. `System.DateOnly`/`System.TimeOnly` support (2026-08-13)
+
+**Trigger**: `docs/DESIGN.md` §7 task 1 / `TeaTimeTracker/reports/M3-dts-validation.md`
+§7 gap #2 — `TastingRecordDetail.BrewedAt: DateOnly` fell to `unknown` +
+a diagnostic, one of the three deliberately-expected gaps the report
+confirmed reproduced as documented (not a new bug, unlike tasks 3/4).
+`TimeOnly` handled identically in the same pass, per this session's
+instructions ("do both, TS side is `string` either way").
+
+**Fix, three locations, matching `docs/DESIGN.md` §7's own task
+breakdown exactly**:
+
+- `Tsgen.Ir.TypeMapper.MapLeaf` (`TypeMapper.pas`): `System.DateOnly`/
+  `System.TimeOnly` → `'string'`, same bucket as `DateTime`/
+  `DateTimeOffset` and for the same reason — `System.Text.Json`'s default
+  converters serialize both to a plain ISO string (`DateOnly` as
+  `"yyyy-MM-dd"`, `TimeOnly` as `"HH:mm:ss[.fffffff]"`), and JSON has no
+  native date/time type for TypeScript to model more precisely anyway.
+- `Tsgen.Nrt.NullabilityProviders.ValueTypeDefaultProvider.IsKnownValueType`:
+  added both CLR names to the known-value-type list (both are genuine CLR
+  `struct`s, same category as `DateTime`), so an unannotated
+  `DateOnly`/`TimeOnly` member resolves to non-null via the same
+  mechanism as tasks 3/4's additions, not left to `--nrt-unknown-policy`.
+- `Tsgen.Inertia.InertiaScanner.ResolveTypeName`: added both written
+  names to the same branch style as `DateTime`/`DateTimeOffset`/`Guid`,
+  so an Inertia props/shared-data field typed via an explicit
+  `var x: DateOnly := ...;` local (the only pattern v1 resolves, §24.6)
+  also works, not just reflection-based class members.
+
+**Fixture, and an unplanned but necessary side effect**: added
+`property RegisteredOn: DateOnly read write;` (unannotated, mirroring
+task 4's `CurrentStatus` addition) to `SampleModel.pas`, and a
+`var joined: DateOnly := new DateOnly(2024, 1, 1); props['Joined'] :=
+joined;` pair to `InertiaMode.pas`'s `Controller.Profile` (covering
+`ResolveTypeName`'s branch specifically, which `SampleModel`'s
+reflection-only path can't reach). Both fixtures failed to build at
+first with `E: Unknown type "DateOnly"` — `System.DateOnly` was
+introduced in .NET 6 and was never backported into the `netstandard2.0`/
+`netstandard2.1` reference assemblies every existing fixture targets
+(`<TargetFramework>.NETStandard</TargetFramework>`), so it's simply not
+visible from a `.NETStandard`-targeted Oxygene source file regardless of
+what's installed locally. Fixed by changing ONLY these two fixtures'
+`<TargetFramework>` from `.NETStandard` to `.NETCore` (each fixture is
+its own independent EBuild project — this cannot affect the other five,
+confirmed via `git diff` showing zero changes to any of their expected
+snapshots after the switch); `Reference Include="Echoes"` needed no
+change, EBuild re-resolved it to the `NETCore5.0` variant automatically.
+Arguably more representative than `.NETStandard` anyway, since
+`DateOnly` is a real .NET 6+-only BCL type — a target app using it (like
+`TeaTimeTracker`, `Mode=Echoes`/`TargetFramework=.NETCore`) will always
+be a `.NETCore` assembly by construction, never `.NETStandard`.
+
+Confirmed via `git diff` that only `SampleModel`'s and `InertiaMode`'s
+own expected snapshots changed (`registeredOn: string;` /
+`joined: string;`, both non-null, both correctly added to
+`ProfileFormErrors`'s key union for the `InertiaMode` case) — no other
+fixture's output moved.
+
+**Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.

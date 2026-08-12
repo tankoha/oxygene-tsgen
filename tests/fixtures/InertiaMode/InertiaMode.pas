@@ -119,6 +119,12 @@ type
       // just the literal "Int32" spelling real Oxygene code rarely uses.
       var age: Integer := 30;
       props['Age'] := age;
+      // System.DateOnly (docs/DESIGN.md §7 task 1, HANDOFF.md §34): proves
+      // InertiaScanner.ResolveTypeName's own DateOnly branch, not just
+      // TypeMapper/ValueTypeDefaultProvider's (already covered by
+      // SampleModel's reflection-based RegisteredOn property).
+      var joined: DateOnly := new DateOnly(2024, 1, 1);
+      props['Joined'] := joined;
       result := Inertia.Render('pages/Profile', props);
     end;
 

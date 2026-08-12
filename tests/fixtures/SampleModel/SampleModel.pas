@@ -26,6 +26,12 @@ type
     // fixture addition.
     property CurrentStatus: Status read write;
 
+    // System.DateOnly (docs/DESIGN.md §7 task 1, HANDOFF.md §34):
+    // unannotated, value-typed -- like Age/IsAdmin/CurrentStatus above,
+    // must resolve to non-null via ValueTypeDefaultProvider, mapped to TS
+    // `string` (ISO "yyyy-MM-dd") by TypeMapper.
+    property RegisteredOn: DateOnly read write;
+
     FirstName, LastName: nullable String;
   end;
 

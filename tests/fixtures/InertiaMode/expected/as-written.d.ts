@@ -31,8 +31,9 @@ declare namespace Props {
     Meta: InertiaMode.MetaDto | null;
     Note: unknown | null;
     Age: number;
+    Joined: string;
   }
-  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note' | 'Age', string>>;
+  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note' | 'Age' | 'Joined', string>>;
   export interface EmptyProps extends Props.SharedData {
   }
   export type EmptyFormErrors = Partial<Record<never, string>>;

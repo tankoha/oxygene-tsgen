@@ -13,6 +13,7 @@ declare namespace SampleModel {
     isAdmin: boolean;
     notes: string | null;
     currentStatus: SampleModel.Status;
+    registeredOn: string;
     firstName: string | null;
     lastName: string | null;
   }

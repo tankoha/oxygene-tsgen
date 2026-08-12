@@ -68,6 +68,16 @@ type
         result := 'number'
       else if (aClrTypeName = 'System.DateTime') or (aClrTypeName = 'System.DateTimeOffset') then
         result := 'string'
+      {
+        System.DateOnly/System.TimeOnly (docs/DESIGN.md §7 task 1,
+        HANDOFF.md §34): both serialize to a plain ISO string under
+        System.Text.Json's default converters -- DateOnly as "yyyy-MM-dd",
+        TimeOnly as "HH:mm:ss[.fffffff]" -- same TS representation as
+        DateTime/DateTimeOffset above, for the same reason (JSON has no
+        native date/time type).
+      }
+      else if (aClrTypeName = 'System.DateOnly') or (aClrTypeName = 'System.TimeOnly') then
+        result := 'string'
       else if aClrTypeName = 'System.Guid' then
         result := 'string'
       else
