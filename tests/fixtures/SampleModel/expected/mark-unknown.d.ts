@@ -6,6 +6,11 @@ declare namespace SampleModel {
     Inactive = 1,
     Pending = 2,
   }
+  export interface Rating {
+    aroma: number;
+    taste: number;
+    overall: number;
+  }
   export interface User {
     id: string;
     displayName: string | null;
@@ -14,6 +19,7 @@ declare namespace SampleModel {
     notes: string; // nrt: unknown
     currentStatus: SampleModel.Status;
     registeredOn: string;
+    currentRating: SampleModel.Rating; // nrt: unknown
     firstName: string | null;
     lastName: string | null;
   }

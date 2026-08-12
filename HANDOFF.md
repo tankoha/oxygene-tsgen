@@ -3634,3 +3634,79 @@ own expected snapshots changed (`registeredOn: string;` /
 fixture's output moved.
 
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.
+
+## 35. struct (Oxygene `record`) support (2026-08-13)
+
+**Trigger**: `docs/DESIGN.md` §7 task 2 / `M3-dts-validation.md` §7 gap
+#1 — `TastingRecordDetail.Rating: Rating` (an Oxygene `record`, i.e. a
+CLR `struct`) fell to `unknown` + a diagnostic, the last of the three
+gaps the report confirmed reproduced exactly as `docs/DESIGN.md` §7
+already expected (not a new bug).
+
+**Fix, one location** (`AssemblyLoader.Load`'s type-filter condition):
+previously `not (t.IsClass or t.IsEnum)` skipped every value type that
+wasn't an enum, including ordinary structs. Added `isStruct := t.IsValueType
+and (not t.IsEnum) and (not t.IsPrimitive)` and included it in the
+admitted set (`t.IsClass or t.IsEnum or isStruct`) — everything else about
+the loop is unchanged: a struct that passes the filter falls into the
+exact same `else` branch (`rt.Kind := RawTypeKind.ClassLike`, then the
+same `GetProperties`/`GetFields` reflection) a class already used, since
+reading a struct's public instance properties/fields works identically
+to reading a class's. `t.IsPrimitive` is .NET's own small fixed set of
+built-in value types (`Int32`, `Boolean`, ...); confirmed this exclusion
+is actually unreachable in practice, not just belt-and-suspenders — kept
+anyway for explicitness/defensiveness, in case `asm.GetTypes()`'s
+target-assembly-only contract is ever weakened later — since
+`asm.GetTypes()` only ever returns types the TARGET assembly itself
+declares, and no assembly can declare its own `System.Int32`, this branch
+was already effectively unreachable even before adding the explicit
+check; the real thing keeping BCL structs like `System.DateTime` out is
+that they simply never appear in the loop at all, being defined in a
+different assembly entirely. No IR (`Tsgen.Ir`) or Emitter
+(`Tsgen.Emit.DtsEmitter`) change was needed — both already treat
+`RawTypeKind.ClassLike`/`IrTypeKindLite.ClassLike` generically, with no
+assumption anywhere that a `ClassLike` IR type must have originated from
+a CLR `class` — so this stayed a single-file, single-location fix, not
+the Loader+IR+Emitter "nested type"-style compound change `CLAUDE.md`
+warns struct support might turn into. It didn't.
+
+**Follow-up finding, deliberately NOT implemented this round**: an
+unannotated struct-typed member (e.g. `TastingRecordDetail.Rating`
+itself) still renders `| null` under the default policy —
+`ValueTypeDefaultProvider` has no path from "this `RawTypeRef` names one
+of our own struct types" to `IsNotNullable`, unlike task 4's enum fix
+(§33). This is real and mirrors §33's bug shape closely enough that it
+would be a small, contained addition (a second flag alongside
+`RawTypeRef.IsEnum`, or generalizing it to something like
+`IsAssemblyValueType`, set from `AssemblyLoader.BuildTypeRef`'s
+`aType.IsEnum` OR struct-check and checked the same way in
+`ValueTypeDefaultProvider`) — but `docs/DESIGN.md` §7 task 2's own text
+scoped this task to "admit structs into the IR, confirm the Emitter
+handles them, add a fixture proving the reference resolves" only, with
+no mention of the referencing member's own nullability. Not adding it
+unrequested, per this session's explicit scope discipline instruction (a
+task turning out to need something adjacent-but-distinct is exactly what
+tasks 3/4 already were split out for) — flagging it here instead so
+it's a deliberate, visible decision, not a missed case. The `SampleModel`
+fixture below makes this visible on purpose: `currentRating` responds to
+`--nrt-unknown-policy` exactly like the deliberately-`Unknown`-reference-type
+`notes` field does (`| null` under default, bare + `// nrt: unknown`
+under `mark-unknown`, bare under `union-nonnull`) — not like the
+already-non-null `currentStatus`/`registeredOn` fields task 4/1 fixed.
+
+**Fixture**: `tests/fixtures/SampleModel/SampleModel.pas` gained a
+`Rating = public record public property Aroma/Taste/Overall: Integer
+read write; end;` — deliberately mirroring `TeaTimeTracker`'s own
+`Rating` record exactly (three `Integer` properties, same field names),
+since that's the real shape this task exists to support — plus
+`property CurrentRating: Rating read write;` (unannotated) on `User`.
+Confirmed via `git diff` that only `SampleModel`'s four snapshots
+changed, and read each by eye: `Rating` emits as an ordinary `export
+interface` (`aroma`/`taste`/`overall: number;`, `Integer`→`Int32`→
+`number` working unchanged since a struct's members go through the exact
+same `BuildTypeRef`/`TypeMapper` path as a class's), and
+`currentRating: SampleModel.Rating | null;` on `User` — a real,
+fully-qualified named-type reference, not `unknown` — which is this
+task's actual acceptance bar.
+
+**Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.

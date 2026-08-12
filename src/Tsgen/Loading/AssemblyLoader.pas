@@ -245,7 +245,22 @@ type
           try
             typeLabel := t.FullName;
 
-            if (not t.IsPublic) or t.IsNested or t.IsGenericType or (not (t.IsClass or t.IsEnum)) then begin
+            {
+              A struct (Oxygene "record", docs/DESIGN.md §7 task 2,
+              HANDOFF.md §35) is t.IsValueType and neither an enum nor a
+              CLR-primitive (Int32/Boolean/... -- t.IsPrimitive is exactly
+              .NET's own small fixed set of built-in value types; asm.GetTypes()
+              only ever returns types the TARGET assembly itself declares,
+              so this can never accidentally admit a BCL struct like
+              System.DateTime -- those belong to a different assembly and
+              never appear in this loop at all). Treated identically to a
+              class from here on (RawTypeKind.ClassLike, same property/
+              field reflection below) -- a struct's public instance
+              properties/fields are read the exact same way as a class's.
+            }
+            var isStruct := t.IsValueType and (not t.IsEnum) and (not t.IsPrimitive);
+
+            if (not t.IsPublic) or t.IsNested or t.IsGenericType or (not (t.IsClass or t.IsEnum or isStruct)) then begin
               inc(skippedCount);
               continue;
             end;

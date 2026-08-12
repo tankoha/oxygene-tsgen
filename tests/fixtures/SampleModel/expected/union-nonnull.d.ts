@@ -2,6 +2,11 @@
 
 declare namespace SampleModel {
   export type Status = "Active" | "Inactive" | "Pending";
+  export interface Rating {
+    aroma: number;
+    taste: number;
+    overall: number;
+  }
   export interface User {
     id: string;
     displayName: string | null;
@@ -10,6 +15,7 @@ declare namespace SampleModel {
     notes: string;
     currentStatus: SampleModel.Status;
     registeredOn: string;
+    currentRating: SampleModel.Rating;
     firstName: string | null;
     lastName: string | null;
   }

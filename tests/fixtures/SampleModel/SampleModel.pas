@@ -3,6 +3,19 @@ namespace SampleModel;
 type
   Status = public enum (Active, Inactive, Pending);
 
+  // Oxygene "record" (a CLR struct/value type, docs/DESIGN.md §7 task 2,
+  // HANDOFF.md §35) -- mirrors TeaTimeTracker's own Rating record exactly
+  // (three Integer properties), the real-world shape this fixture exists
+  // to prove tsgen handles: emitted as an ordinary `export interface`,
+  // referenced by full name from User.CurrentRating below rather than
+  // falling back to `unknown`.
+  Rating = public record
+  public
+    property Aroma: Integer read write;
+    property Taste: Integer read write;
+    property Overall: Integer read write;
+  end;
+
   User = public class
   public
     property Id: not nullable String read write := '';
@@ -31,6 +44,12 @@ type
     // must resolve to non-null via ValueTypeDefaultProvider, mapped to TS
     // `string` (ISO "yyyy-MM-dd") by TypeMapper.
     property RegisteredOn: DateOnly read write;
+
+    // Struct-typed (record) property, unannotated -- must resolve to a
+    // fully-qualified named-type reference (SampleModel.Rating), not
+    // `unknown`, proving AssemblyLoader.Load's struct-admission fix
+    // reaches the IR/Emitter end to end (HANDOFF.md §35).
+    property CurrentRating: Rating read write;
 
     FirstName, LastName: nullable String;
   end;
