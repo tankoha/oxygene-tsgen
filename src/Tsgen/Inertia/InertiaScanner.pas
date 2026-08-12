@@ -123,6 +123,43 @@ type
         result := MakeSimpleTypeRef('System.' + aWrittenName)
       else if (aWrittenName = 'DateTime') or (aWrittenName = 'DateTimeOffset') or (aWrittenName = 'Guid') then
         result := MakeSimpleTypeRef('System.' + aWrittenName)
+      {
+        Oxygene's own "more Pascal-ish" standard-library aliases for
+        exactly the same CLR value types already recognized by their
+        direct CLR name above -- confirmed against
+        https://docs.elementscompiler.com/API/StandardTypes/Integers/,
+        not guessed (M3-dts-validation.md bug #1: real Oxygene code
+        overwhelmingly writes "Integer" rather than "Int32", which is what
+        originally exposed this gap -- ResolveTypeName silently returned
+        nil for it, so a var like "var count: Integer" never registered
+        in aLocalTypes and any props value read from it fell back to
+        unknown). Deliberately does NOT add "Real" for Double despite that
+        being a common historical Pascal/Delphi name: the current Elements
+        Floats standard-types page
+        (https://docs.elementscompiler.com/API/StandardTypes/Floats/) does
+        not document it as a recognized Oxygene alias (only "float"/
+        "Float32" for Single and "Float64" for Double), so it's left out
+        rather than added on assumption -- see HANDOFF.md §32. Also
+        deliberately does NOT add NativeInt/NativeUInt (aliased there to
+        IntPtr/UIntPtr) -- platform pointer-sized ints have no
+        TypeMapper.MapLeaf case anyway (System.IntPtr/System.UIntPtr
+        aren't in its known-primitives list), and aren't realistic Inertia
+        props types.
+      }
+      else if aWrittenName = 'Integer' then
+        result := MakeSimpleTypeRef('System.Int32')
+      else if aWrittenName = 'SmallInt' then
+        result := MakeSimpleTypeRef('System.Int16')
+      else if aWrittenName = 'ShortInt' then
+        result := MakeSimpleTypeRef('System.SByte')
+      else if aWrittenName = 'Word' then
+        result := MakeSimpleTypeRef('System.UInt16')
+      else if (aWrittenName = 'Cardinal') or (aWrittenName = 'LongWord') then
+        result := MakeSimpleTypeRef('System.UInt32')
+      else if aWrittenName = 'IntMax' then
+        result := MakeSimpleTypeRef('System.Int64')
+      else if aWrittenName = 'UIntMax' then
+        result := MakeSimpleTypeRef('System.UInt64')
       else if aKnownTypes.ContainsKey(aWrittenName) then
         result := aKnownTypes[aWrittenName]
       else

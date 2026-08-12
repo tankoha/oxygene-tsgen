@@ -113,6 +113,12 @@ type
       props['Bio'] := 'hello';
       props['Meta'] := new MetaDto;
       props['Note'] := SomeHelper();
+      // "Integer" (Oxygene's standard alias for Int32, docs/HANDOFF.md §32)
+      // via an explicit-type-annotated local -- the only shape v1 resolves
+      // (HANDOFF.md §24.6) -- proves ResolveTypeName recognizes it, not
+      // just the literal "Int32" spelling real Oxygene code rarely uses.
+      var age: Integer := 30;
+      props['Age'] := age;
       result := Inertia.Render('pages/Profile', props);
     end;
 

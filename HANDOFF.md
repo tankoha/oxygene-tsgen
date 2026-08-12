@@ -3425,3 +3425,76 @@ didn't, `git diff` on every pre-existing `expected/*.d.ts` was empty)
 followed by a `-UpdateSnapshots` run to capture the new
 `ExternalDependency` fixture, then a final clean run: **17/17 cases
 pass** (was 16/16 before this task's new fixture).
+
+## 32. Oxygene standard type-alias support in `InertiaScanner.ResolveTypeName` (2026-08-13)
+
+**Trigger**: `TeaTimeTracker/reports/M3-dts-validation.md` bug #1 —
+`InertiaScanner.ResolveTypeName` (`src/Tsgen/Inertia/InertiaScanner.pas`)
+only recognized a value type's exact CLR name (`Int32`, `Int16`, ...), not
+Oxygene's own "more Pascal-ish" standard-library aliases for those same
+types. `Integer` (the alias for `Int32`) is what real Oxygene code
+overwhelmingly writes — confirmed by the report finding it in
+`TeaTimeTracker`'s own `RecordsController.Index` (`var count: Integer :=
+records.Count;`), the exact `var IDENT: TypeName := ...;` shape §24.6
+already documents as v1's only resolvable local-variable pattern — so
+`var count: Integer` silently failed to register in `aLocalTypes`, and
+the props value read from it fell back to `unknown` + a diagnostic naming
+the field, even though the underlying type (`Int32`) is fully supported
+everywhere else in the pipeline.
+
+**Fix**: added an alias branch to `ResolveTypeName`, checked against
+https://docs.elementscompiler.com/API/StandardTypes/Integers/ (fetched
+directly, not from memory or a general web summary — an initial broader
+web search claimed "Real" is also a recognized Oxygene alias for
+`Double`, which turned out to be unconfirmed by the actual Elements docs
+page, see below) rather than guessed:
+
+| Written alias | Resolves to |
+|---|---|
+| `Integer` | `System.Int32` |
+| `SmallInt` | `System.Int16` |
+| `ShortInt` | `System.SByte` |
+| `Word` | `System.UInt16` |
+| `Cardinal`, `LongWord` | `System.UInt32` |
+| `IntMax` | `System.Int64` |
+| `UIntMax` | `System.UInt64` |
+
+**Deliberately NOT added, and why**:
+- **`Real` for `Double`** — a common historical Pascal/Delphi name, and a
+  general web search initially suggested it's supported in Oxygene too.
+  Fetching https://docs.elementscompiler.com/API/StandardTypes/Floats/
+  directly (the actual current Elements docs page, table format matching
+  the Integers page above) shows only `Single` (aliases `float`,
+  `Float32`) and `Double` (alias `Float64`) — no `Real` anywhere on that
+  page. Not adding an alias the authoritative source doesn't confirm,
+  per this session's explicit "don't guess" instruction — if `Real` is
+  genuinely valid Oxygene and just undocumented on that specific page,
+  add it later with a better citation, not now.
+- **`NativeInt`/`NativeUInt`** (aliased to `IntPtr`/`UIntPtr` on the same
+  Integers page) — real, but `Tsgen.Ir.TypeMapper.MapLeaf` has no case for
+  `System.IntPtr`/`System.UIntPtr` either (would still render `unknown`
+  downstream even if resolved here), and platform pointer-sized integers
+  aren't a realistic Inertia props type. Skipped as out-of-scope rather
+  than half-wired.
+
+Only `InertiaScanner.ResolveTypeName` needed changing —
+`ParseMethodParams`/`ParseVarDecl` both already call it as their single
+choke point for written-type-name resolution, so parameter types spelled
+with an alias now resolve too, not just local-variable declarations.
+`Tsgen.Nrt.NullabilityScanner` (the separate NRT source scanner) needed
+no change: it works off the `nullable`/`not nullable` keywords directly,
+never a type-name string, so it was never affected by this gap.
+
+**Fixture**: `tests/fixtures/InertiaMode/InertiaMode.pas`'s
+`Controller.Profile` now also declares `var age: Integer := 30;` and
+`props['Age'] := age;` — chosen over a new dedicated fixture since
+`InertiaMode` is exactly where the real bug manifested (props-value
+resolution, not assembly-reflection member typing, which already worked
+via `Int32` regardless of spelling). Confirmed `expected/default.d.ts`'s
+`ProfileProps.age: number;` (no `| null`, correctly non-nullable via
+`ValueTypeDefaultProvider` same as every other value-typed member) and
+`ProfileFormErrors` picking up the new `'age'` key — the *only* diff
+across all three `InertiaMode` snapshots (`default`/`non-null`/
+`as-written`), confirmed via `git diff` before committing.
+
+**Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.
