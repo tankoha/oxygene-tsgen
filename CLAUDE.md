@@ -39,11 +39,19 @@ case-sensitive on purpose (`-ceq`, not PowerShell's default `-eq`) —
 PowerShell's `-eq` is case-insensitive for strings, which silently made
 the whole suite blind to case-only regressions until this was found and
 fixed alongside the `--naming-policy` bug, `HANDOFF.md` §28. Don't
-"simplify" it back to `-eq`.** Six fixtures exist, 16 cases total:
+"simplify" it back to `-eq`.** Seven fixtures exist, 17 cases total:
 `SampleModel` (enums, explicit NRT, all three `--nrt-unknown-policy`
 values via its deliberately-still-`Unknown` `Notes` field — see
 `HANDOFF.md` §21.3 for why that field exists — plus `as-written` for
-`--naming-policy`, `HANDOFF.md` §28),
+`--naming-policy`, `HANDOFF.md` §28; also a `Status`-typed unannotated
+enum property, a `DateOnly`-typed unannotated property, and a `Rating`
+`record`/struct type referenced by an unannotated property, covering
+`HANDOFF.md` §§33-35 respectively),
+`ExternalDependency` (a same-folder sibling dependency DLL a target
+assembly's own type inherits from — regression coverage for
+`AssemblyLoader.Load`'s dependency-resolution fix, `HANDOFF.md` §31;
+its own `Vendor/*.elements` subproject is built by `tools/run-tests.ps1`
+before the fixture's top-level project, see the script for why),
 `TokenizerEdgeCases` (NRT keywords inside comments/string literals, no
 trailing newline, also covers `mark-unknown`), `MultiTypeAndIndexer`
 (multiple types sharing one `type` section, indexer-style properties —
@@ -79,6 +87,20 @@ alone is responsible for and now does (`HANDOFF.md` §20 — a `(depth =
 typeDepth)` guard was missing on the property-scanning branch). See
 `HANDOFF.md` §18.1/§20 for the full explanation.
 
+**structs (Oxygene `record`) ARE supported, unlike nested types** —
+don't conflate the two scope decisions above. `AssemblyLoader.Load`
+admits a public, non-nested, non-generic, non-enum, non-primitive
+`t.IsValueType` type the same way it admits a class (`RawTypeKind
+.ClassLike`, same property/field reflection); no Loader+IR+Emitter
+compound change was actually needed here, unlike the nested-type case
+this might otherwise look similar to (`HANDOFF.md` §35). One real gap
+remains, deliberately unfixed: an unannotated member whose type is one
+of the target assembly's own structs still renders `| null` — only
+enum-typed members get the "assembly-defined value type defaults to
+non-null" treatment so far (`RawTypeRef.IsEnum`, `HANDOFF.md` §33); see
+§35's own "follow-up finding" for the small, contained change this would
+need if it's ever prioritized.
+
 **Nullability is resolved through the `INullabilityProvider` chain**
 (`src/Tsgen/Nrt/NullabilityProviders.pas`, `HANDOFF.md` §21), not a
 direct dictionary lookup: `IrBuilder.Build` tries
@@ -86,15 +108,40 @@ direct dictionary lookup: `IrBuilder.Build` tries
 first, then `ValueTypeDefaultProvider` (known CLR value types are
 non-nullable unless explicitly annotated otherwise) — first non-`Unknown`
 answer wins. Consequence worth remembering: an unannotated *value-typed*
-member (`Int32`, `Boolean`, etc.) is no longer `Unknown` at all, so
-`--nrt-unknown-policy` has nothing to act on for it — only unannotated
-*reference-typed* members stay genuinely `Unknown`. `--nrt-unknown-policy`
-has three values: `nullable` | `non-null` | `mark-unknown` (the last
-renders the same bare type as `non-null` plus a trailing `// nrt:
-unknown` comment, since TypeScript can't express "undetermined" as a
-distinct type). Provider 2 (reflection-attribute-based, for C#/VB
-dependency assemblies) remains genuinely unimplemented — don't add a stub
-for it without a real need.
+member (`Int32`, `Boolean`, `DateOnly`/`TimeOnly`, etc.) is no longer
+`Unknown` at all, so `--nrt-unknown-policy` has nothing to act on for
+it — only unannotated *reference-typed* members (and, still, unannotated
+*struct-typed* members — see the "structs ARE supported" note above,
+`HANDOFF.md` §35) stay genuinely `Unknown`. Since `HANDOFF.md` §33,
+`ValueTypeDefaultProvider` also recognizes an unannotated member typed
+as one of the TARGET ASSEMBLY'S OWN enums as non-nullable, via
+`RawTypeRef.IsEnum` (propagated from `RawType.Kind = Enum` at both
+`RawTypeRef`-building call sites — `AssemblyLoader.BuildTypeRef`
+*and* `InertiaScanner.Scan`'s `aKnownTypes` construction, since an
+Inertia props/shared-data field's type is resolved by written name from
+source, not reflection; both needed the fix, see §33) — not by adding
+every possible enum name to `IsKnownValueType`'s hardcoded list, which
+could never enumerate a target assembly's own type names up front the
+way it can the fixed BCL primitive set. `--nrt-unknown-policy` has three
+values: `nullable` | `non-null` | `mark-unknown` (the last renders the
+same bare type as `non-null` plus a trailing `// nrt: unknown` comment,
+since TypeScript can't express "undetermined" as a distinct type).
+Provider 2 (reflection-attribute-based, for C#/VB dependency assemblies)
+remains genuinely unimplemented — don't add a stub for it without a real
+need.
+
+**`InertiaScanner.ResolveTypeName` also recognizes Oxygene's own
+"more Pascal-ish" standard-library aliases** (`Integer`→`Int32`,
+`SmallInt`→`Int16`, `ShortInt`→`SByte`, `Word`→`UInt16`,
+`Cardinal`/`LongWord`→`UInt32`, `IntMax`/`UIntMax`→`Int64`/`UInt64`),
+confirmed against https://docs.elementscompiler.com/API/StandardTypes/Integers/
+— not `Real` for `Double`, despite that being a common historical
+Pascal/Delphi name: the current Elements Floats standard-types page does
+not document it as a recognized alias, so it was deliberately left out
+rather than guessed (`HANDOFF.md` §32). `Integer` specifically matters
+because real Oxygene code overwrites `Int32` with it almost universally
+— a target app's props-value locals spelled `var count: Integer := ...;`
+silently failed to resolve before this fix.
 
 **Generics resolve through `RawTypeRef` (`src/Tsgen/Loading/RawModel.pas`)
 + recursive `TypeMapper.MapTypeRef`** (`HANDOFF.md` §23), not a flat
@@ -248,6 +295,27 @@ happens inside `DtsEmitter.Emit`, not `Program.pas`: it collapses repeated
 warnings about the same unmapped CLR type across many members into one
 line before handing the result to `Program.pas` to print. See
 `HANDOFF.md` §19 for why this was added and how it works.
+
+**`AssemblyLoader.Load` can now load a real, multi-assembly application,
+not just a self-contained fixture DLL** (`HANDOFF.md` §31, fixed after
+`TeaTimeTracker`'s M3 validation pass hit this as a hard blocker before
+any of its other findings could even run). Its `PathAssemblyResolver`
+search paths now include, in priority order: the target assembly itself,
+every other DLL in the target's own folder (e.g. a NuGet dependency
+copy-located next to it), each shared framework named in the target's
+own `<assembly>.runtimeconfig.json` (`Microsoft.AspNetCore.App`, etc. —
+resolved under `C:\Program Files\dotnet\shared\`, with a same-major-
+version fallback if the exact version isn't installed), and finally the
+.NET runtime directory hosting `tsgen.exe` itself (the original,
+pre-fix behavior, now the last-resort fallback). The `for each t in
+asm.GetTypes()` loop also gained a per-type `try`/`except`: a type whose
+resolution still fails (e.g. a genuinely unresolvable third-party
+dependency) is skipped individually with a diagnostic instead of
+crashing the whole process — this is what closed the gap the
+"Pipeline stages report problems via `Tsgen.Diagnostics`" rule above
+already called for but this loop didn't actually follow before. Don't
+reintroduce a bare `for each t in asm.GetTypes() do begin ... end;`
+without the per-type guard.
 
 ## Known unresolved technical risk
 

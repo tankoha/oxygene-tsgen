@@ -3710,3 +3710,104 @@ fully-qualified named-type reference, not `unknown` — which is this
 task's actual acceptance bar.
 
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.
+
+## 36. Session summary: `docs/DESIGN.md` §7 tasks 0/3/4/1/2, in that priority order (2026-08-13)
+
+All five tasks `docs/DESIGN.md` §7 lists (added by `TeaTimeTracker`'s M3
+validation pass, `M3-dts-validation.md`) are now done, in the priority
+order the session was given (0 → 3 → 4 → 1 → 2, task 0 first since
+nothing else was re-verifiable against a real app until it was fixed).
+See §31 (task 0: `AssemblyLoader` dependency resolution + crash
+resilience), §32 (task 3: Oxygene type-alias support), §33 (task 4: enum
+non-null default), §34 (task 1: `System.DateOnly`/`TimeOnly`), §35 (task
+2: struct/`record` support) for the full per-task detail; `CLAUDE.md` was
+updated in the same session to reflect all five (fixture count/list,
+`ValueTypeDefaultProvider`'s enum/DateOnly coverage, the type-alias list,
+the new `AssemblyLoader` dependency-resolution paragraph, and a note
+distinguishing struct support from the still-out-of-scope nested-type
+case).
+
+**Final acceptance run**, after all five fixes, against the same real
+`TeaTimeTracker.dll` that originally blocked M3 (§31's own acceptance run
+only had task 0 applied; this one has all five):
+
+```
+tsgen generate --assembly ...\TeaTimeTracker\Bin\Release\TeaTimeTracker.dll --source ...\TeaTimeTracker\src\TeaTimeTracker --out <scratchpad> --mode inertia
+```
+
+```typescript
+declare namespace TeaTimeTracker.Models {
+  export enum BeverageType { GreenTea = 0, BlackTea = 1, Oolong = 2, Herbal = 3, Coffee = 4 }
+  export enum ThemeMode { Light = 0, Dark = 1, System = 2 }
+  export interface Rating {
+    aroma: number;
+    taste: number;
+    overall: number;
+  }
+  export interface TastingRecordDetail {
+    id: number;
+    name: string;
+    beverageType: TeaTimeTracker.Models.BeverageType;
+    rating: TeaTimeTracker.Models.Rating | null;
+    notes: string | null;
+    brewedAt: string;
+  }
+}
+declare namespace Props {
+  export interface SharedData {
+    flash: Record<string, string>;
+    timestamp: string;
+    errors: Record<string, string>;
+    mode: TeaTimeTracker.Models.ThemeMode;
+  }
+  export interface IndexProps extends Props.SharedData {
+    records: unknown | null;
+    count: number;
+  }
+  // ...EditProps/ThemeProps and their FormErrors types, unchanged from §31's run
+}
+```
+
+Comparing this to §31's task-0-only run and the original M3 report:
+- `beverageType`/`mode`: `| null` → non-null (task 4).
+- `brewedAt`: `unknown` → `string` (task 1).
+- `count`: `unknown` → `number` (task 3 — the `Integer` alias).
+- `rating`: `unknown` → `TeaTimeTracker.Models.Rating | null`, a real
+  interface with `aroma`/`taste`/`overall: number;` (task 2) — still
+  `| null` since struct-typed-member non-null defaulting was this task's
+  documented, deliberate follow-up finding (§35), not fixed this round.
+- `records`: still `unknown` — `List<TastingRecordSummary>` generic
+  props resolution was never one of the five tasks (`docs/DESIGN.md` §7
+  never listed it; `InertiaScanner` v1's generic-typed-local limitation
+  is `HANDOFF.md` §24.6's own documented scope boundary) and remains
+  exactly as expected, not a regression.
+- `notes`: unchanged (`string | null`, explicitly annotated
+  `nullable String` in `TeaTimeTracker`'s own source — never affected by
+  any of these five tasks).
+
+Diagnostics dropped from six warning lines (§31's run) to three: the
+`Rating`/`DateOnly` "no type mapping" warnings and the `Count`
+"could not resolve" warning are gone (their underlying gaps are fixed);
+only the pre-existing `Records` generics gap, its matching aggregate
+`(unresolved)` warning, and the "skipped N type(s)" aggregate (now 4, was
+5 — one fewer non-public/nested/generic/unsupported-kind type, unrelated
+churn from ordinary reflection, not investigated further since it's
+below the diagnostic's own aggregation threshold for detail) remain.
+`TeaTimeTracker` frontend integration itself (copying this `.d.ts` into
+`frontend/src/types/generated/` and running `tsc --noEmit` against it)
+was explicitly out of scope for this session (TeaTimeTracker repo writes
+prohibited) — that's M3's own re-run, a `TeaTimeTracker`-side task for a
+future session, not part of `docs/DESIGN.md` §7.
+
+**All local commits, in order** (task order 0 → 3 → 4 → 1 → 2, plus this
+documentation pass):
+
+1. task 0 — `AssemblyLoader` dependency resolution + crash resilience
+2. task 3 — Oxygene type-alias support
+3. task 4 — enum non-null default value
+4. task 1 — `System.DateOnly`/`TimeOnly`
+5. task 2 — struct (Oxygene `record`) support
+6. this `HANDOFF.md` §36 + `CLAUDE.md` documentation pass
+
+No push performed, per instructions. Final state: **7 fixtures, 17/17
+snapshot cases pass.**
