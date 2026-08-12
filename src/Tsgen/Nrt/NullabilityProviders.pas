@@ -68,6 +68,19 @@ type
     generics (List<T>, Dictionary<K,V>, arrays, ...) are deliberately NOT
     touched here -- like any other reference type, "no annotation" means
     Unknown, not an auto-resolved default, so they fall through unchanged.
+
+    Also recognizes aTypeRef.IsEnum (HANDOFF.md §33): the target
+    assembly's own enum types are CLR value types too, just like
+    Int32/Boolean/etc., but can't be enumerated in IsKnownValueType's
+    hardcoded name list up front (an enum's name is whatever the target
+    assembly happens to call it). IsEnum is propagated from
+    Tsgen.Loading.RawType.Kind by both call sites that build a
+    RawTypeRef -- AssemblyLoader.BuildTypeRef (reflection path, from
+    System.Type.IsEnum) and InertiaScanner.Scan's aKnownTypes
+    construction (source-scan path, from RawType.Kind directly) -- rather
+    than this provider trying to look either up itself, keeping it a pure
+    function of the RawTypeRef it's handed, same as every other check
+    here.
   }
   ValueTypeDefaultProvider = public class(INullabilityProvider)
   public
@@ -75,7 +88,7 @@ type
     begin
       if aTypeRef.FullName = 'System.Nullable`1' then
         result := NullabilityKind.IsNullable
-      else if IsKnownValueType(aTypeRef.FullName) then
+      else if IsKnownValueType(aTypeRef.FullName) or aTypeRef.IsEnum then
         result := NullabilityKind.IsNotNullable
       else
         result := NullabilityKind.Unknown;

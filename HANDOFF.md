@@ -3498,3 +3498,79 @@ across all three `InertiaMode` snapshots (`default`/`non-null`/
 `as-written`), confirmed via `git diff` before committing.
 
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.
+
+## 33. Enum non-null default value in `ValueTypeDefaultProvider` (2026-08-13)
+
+**Trigger**: `TeaTimeTracker/reports/M3-dts-validation.md` bug #2 — an
+unannotated property/field whose type is one of the target assembly's own
+enums (e.g. `property BeverageType: BeverageType read write;`) rendered
+`| null` under the default `--nrt-unknown-policy`, even though enums are
+CLR value types and every *other* unannotated value type
+(`Int32`/`Boolean`/...) already resolves to non-null via
+`ValueTypeDefaultProvider` (§21). Root cause:
+`ValueTypeDefaultProvider.IsKnownValueType` is a hardcoded string-name
+list of BCL primitives — it can enumerate `System.Int32` up front because
+that name is fixed and known at compile time, but it has no way to
+enumerate every possible target-assembly enum name the same way, so a
+user-defined enum always fell through to `Unknown` from every provider
+(`OxygeneSourceScanProvider` too, since Oxygene convention doesn't require
+writing `not nullable` on a value type either) and picked up
+`--nrt-unknown-policy`'s default.
+
+**Design, following the report's own §5.1 suggestion**: propagate
+`RawType.Kind = Enum` (already tracked per-type in
+`src/Tsgen/Loading/RawModel.pas`) through to the MEMBER's own type
+reference, rather than trying to make `ValueTypeDefaultProvider` look
+anything up by name:
+
+- `RawTypeRef` (`RawModel.pas`) gains an `IsEnum: Boolean` field — true
+  only for a leaf reference (never for the array/generic-instantiation
+  wrapper itself; only a wrapper's element/argument type could be an
+  enum, and that nested `RawTypeRef` carries its own `IsEnum`).
+- **Two separate call sites build a `RawTypeRef` and both needed the
+  fix** — this is the one design point worth flagging for whoever reads
+  this next, since it's easy to fix only the more obvious one and think
+  the bug is closed:
+  - `AssemblyLoader.BuildTypeRef` (reflection path, used for every
+    ordinary class member): sets `result.IsEnum := aType.IsEnum` in the
+    leaf (`else`) branch, straight from `System.Type.IsEnum`. Fixes the
+    `beverageType`-style case (a real class property).
+  - `InertiaScanner.Scan`'s `knownTypes` dictionary construction (source-
+    scan path, used to resolve Inertia props/shared-data field types by
+    written name): now sets `IsEnum := (rt.Kind = RawTypeKind.Enum)` per
+    entry, reading `RawType.Kind` directly (there's no live
+    `System.Type` here — `aRaw` is the already-loaded `RawAssembly`).
+    Fixes the `mode`-style case (`var mode: ThemeMode := ...;
+    shared['Mode'] := mode;`, resolved via `ResolveTypeName`'s
+    `aKnownTypes` lookup, an entirely different code path from class-
+    member reflection). The M3 report's harness reproduction hit this
+    exact path (`SharedData.mode: ThemeMode | null`) — fixing only
+    `AssemblyLoader.BuildTypeRef` would have silently left this half of
+    the bug in place.
+- `ValueTypeDefaultProvider.TryGetNullability`: `IsKnownValueType(...) or
+  aTypeRef.IsEnum` now both lead to `IsNotNullable`. The existing
+  `Nullable<T>` check stays first and still wins for `nullable SomeEnum`
+  (a `Nullable<T>`-wrapped member's outer `RawTypeRef` has
+  `FullName = 'System.Nullable\`1'` and `IsEnum = false` — only the inner
+  `TypeArguments[0]` entry, never examined by this provider, would carry
+  `IsEnum = true` — so an explicitly-nullable enum is unaffected by this
+  change, exactly like an explicitly-nullable `Int32` already was).
+
+**Fixture**: `tests/fixtures/SampleModel/SampleModel.pas`'s `Status` enum
+existed already but no member referenced it — added
+`property CurrentStatus: Status read write;` (deliberately unannotated)
+to `User`, reusing the existing enum rather than adding a new one.
+Confirmed via `git diff` that only the `SampleModel` fixture's four
+snapshots changed (`InertiaMode`'s, which has no enum type at all, did
+not — ruling out an accidental behavior change elsewhere) and that
+`currentStatus: SampleModel.Status;` renders with no `| null` and no
+`// nrt: unknown` comment in any of `default`/`union-nonnull`/
+`mark-unknown`/`as-written` — genuinely resolved non-null, not merely
+defaulted, matching `CLAUDE.md`'s existing NRT-fixture guidance (a
+default-only snapshot can't distinguish "correctly resolved" from
+"happened to default the same way" — `SampleModel`'s pre-existing `Notes`
+member already exercises the genuinely-`Unknown` side of that
+distinction, so no separate non-null-policy fixture case was needed just
+for this addition).
+
+**Verification**: `tools/run-tests.ps1` — **17/17 cases pass**.

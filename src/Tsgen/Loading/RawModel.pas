@@ -23,6 +23,26 @@ type
     IsArray: Boolean;
     ElementType: RawTypeRef;                                  // set when IsArray
     TypeArguments: List<RawTypeRef> := new List<RawTypeRef>;  // non-empty when this is a generic instantiation
+    {
+      True when this is a LEAF reference (not IsArray, no TypeArguments) to
+      a type whose own RawType.Kind is Enum -- i.e. the target assembly's
+      own enum types, mirroring that Kind flag across from
+      Tsgen.Loading.RawType to a MEMBER's type reference so
+      Tsgen.Nrt.NullabilityProviders.ValueTypeDefaultProvider can recognize
+      an unannotated enum-typed member as a non-nullable CLR value type,
+      same as Int32/Boolean/etc., without needing its own hardcoded name
+      list (which could never enumerate every possible target-assembly
+      enum name up front the way the BCL primitive list can). Set by
+      AssemblyLoader.BuildTypeRef (from System.Type.IsEnum, reflection
+      path) and by Tsgen.Inertia.InertiaScanner.Scan's aKnownTypes
+      construction (from RawType.Kind, source-scan path) -- see
+      HANDOFF.md §33 for why both call sites needed the same fix. Always
+      false for array/generic-instantiation RawTypeRefs themselves (an
+      array or List<T> wrapper is never itself an enum, only possibly its
+      element/argument type, which carries its own IsEnum on its own
+      nested RawTypeRef).
+    }
+    IsEnum: Boolean;
 
     // Human-readable form for diagnostics (e.g. "List<Foo>", "Foo[]") -- not used for type-mapping logic itself.
     method DisplayName: String;

@@ -12,6 +12,7 @@ declare namespace SampleModel {
     Age: number;
     IsAdmin: boolean;
     Notes: string | null;
+    CurrentStatus: SampleModel.Status;
     FirstName: string | null;
     LastName: string | null;
   }

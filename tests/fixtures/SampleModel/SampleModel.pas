@@ -17,6 +17,15 @@ type
     // do, now that they resolve to not-nullable unconditionally.
     property Notes: String read write;
 
+    // Unannotated enum-typed property, deliberately no nullable/not
+    // nullable annotation -- HANDOFF.md §33: enums are CLR value types,
+    // so this must resolve to non-null via ValueTypeDefaultProvider's
+    // RawTypeRef.IsEnum check, exactly like Age/IsAdmin, not fall back to
+    // --nrt-unknown-policy's default like Notes does. Reuses the Status
+    // enum already declared above, which no member referenced before this
+    // fixture addition.
+    property CurrentStatus: Status read write;
+
     FirstName, LastName: nullable String;
   end;
 

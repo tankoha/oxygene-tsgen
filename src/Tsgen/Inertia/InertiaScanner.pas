@@ -601,9 +601,22 @@ type
       result := new List<InertiaPageProps>;
       if not Directory.Exists(aSourceDir) then exit;
 
+      {
+        Sets IsEnum from RawType.Kind directly (not via
+        AssemblyLoader.BuildTypeRef -- this dictionary is built from the
+        already-loaded RawAssembly, not from a live System.Type), so a
+        props/shared-data field typed as one of the target assembly's own
+        enums (e.g. "var mode: ThemeMode := ...; shared['Mode'] := mode;")
+        is recognized as a non-nullable value type by
+        ValueTypeDefaultProvider downstream, same as the reflection-based
+        member-typing path already is (HANDOFF.md §33).
+      }
       var knownTypes := new Dictionary<String, RawTypeRef>;
-      for each rt in aRaw.Types do
-        knownTypes[rt.Name] := MakeSimpleTypeRef(rt.FullName);
+      for each rt in aRaw.Types do begin
+        var typeRef := MakeSimpleTypeRef(rt.FullName);
+        typeRef.IsEnum := (rt.Kind = RawTypeKind.Enum);
+        knownTypes[rt.Name] := typeRef;
+      end;
 
       for each filePath in Directory.GetFiles(aSourceDir, '*.pas', SearchOption.AllDirectories) do begin
         var text := File.ReadAllText(filePath);

@@ -50,8 +50,10 @@ type
         for each argType in aType.GetGenericArguments() do
           result.TypeArguments.Add(BuildTypeRef(argType));
       end
-      else
+      else begin
         result.FullName := aType.FullName;
+        result.IsEnum := aType.IsEnum;
+      end;
     end;
 
     {
