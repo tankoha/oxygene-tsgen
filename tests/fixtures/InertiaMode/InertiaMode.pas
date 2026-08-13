@@ -78,6 +78,19 @@ type
     property Points: Integer read write;
   end;
 
+  // Reachable ONLY as the element type of a "var tags: List<TagDto>"
+  // annotated local -- never named directly by a props field, and not a
+  // member of any other reachable type either. Same spirit as RoleDto's
+  // transitive-only reachability above, one level further out: it proves
+  // InertiaIrBuilder.CollectReferencedTypes walks a generic
+  // RawTypeRef's TypeArguments, which only produces an edge at all once
+  // InertiaScanner.ParseTypeAnnotation builds a structural generic type
+  // ref for the colon annotation.
+  TagDto = public class
+  public
+    property Label: not nullable String read write := '';
+  end;
+
   // Deliberately never reachable from any page -- must NOT appear in
   // the output. Proves the reachability filter actually filters.
   UnusedDto = public class
@@ -145,6 +158,18 @@ type
       // non-null (HANDOFF.md §35 follow-up), not "| null".
       var badge: BadgeDto;
       props['Badge'] := badge;
+      // Generic colon annotation -- the exact shape TeaTimeTracker's own
+      // RecordsController.Index uses ("var records:
+      // List<TastingRecordSummary> := fRepository.GetAll();") and the
+      // only generic spelling InertiaScanner.ParseTypeAnnotation
+      // resolves. TagDto is reachable only as this list's element type.
+      var tags: List<TagDto> := new List<TagDto>;
+      props['Tags'] := tags;
+      // Two type arguments, both resolving -- maps to a TS Record type
+      // downstream. Reuses RoleDto rather than introducing a second new
+      // type, keeping this fixture's type count down.
+      var lookup: Dictionary<String, RoleDto> := new Dictionary<String, RoleDto>;
+      props['Lookup'] := lookup;
       result := Inertia.Render('pages/Profile', props);
     end;
 

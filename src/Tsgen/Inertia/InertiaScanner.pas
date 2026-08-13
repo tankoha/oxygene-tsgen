@@ -54,14 +54,36 @@ type
     scope discipline. Deliberately resolves only: literals (string/
     integer/real/boolean), a plain identifier referencing a tracked
     parameter or local variable's declared type, and non-generic
-    `new NamedType(...)` expressions. Deliberately NOT resolved this
-    round (falls back to Unknown + a diagnostic naming the unresolved
-    key, per §24 scope decision): `new class(...)` anonymous-literal
-    values, generic-typed parameters/locals, conditional/branch-dependent
-    key-setting, keys set via a helper-method call,
-    `Inertia.Defer(...)`/`Inertia.Merge(...)`-wrapped values, dynamically
-    computed keys, and props built in a different method/class than
-    where `Render` is called.
+    `new NamedType(...)` expressions.
+
+    A tracked local's declared type MAY be a generic one, but only in
+    the explicit colon-annotation position -- "var records: List<Foo> :=
+    ...;". That is the shape this repository's CLAUDE.md prescribes for
+    every value handed to props (always receive it into an annotated
+    local first), and the only one real controller code here uses.
+    ParseTypeAnnotation resolves it recursively, so nested arguments
+    work too, over the List/IList/IEnumerable/ICollection/IReadOnlyList/
+    IReadOnlyCollection/HashSet/ISet family, the Dictionary/IDictionary/
+    IReadOnlyDictionary family, and Nullable -- exactly the set
+    Tsgen.Ir.TypeMapper knows how to render (see ResolveGenericDefName).
+    Nothing downstream needed teaching: RawTypeRef is already a
+    structural reference, TypeMapper.MapTypeRef already maps generic
+    arguments recursively, and InertiaIrBuilder.CollectReferencedTypes
+    already walks TypeArguments, so an element type reachable only
+    through a generic argument still gets emitted by the reachability
+    BFS.
+
+    Deliberately NOT resolved this round (falls back to Unknown + a
+    diagnostic naming the unresolved key, per §24 scope decision):
+    `new class(...)` anonymous-literal values, a generic spelling
+    anywhere OTHER than a local's colon annotation -- an inferred
+    "var x := new List<Foo>;" local, a generic-typed method parameter,
+    a "new NamedType<Foo>(...)" expression directly in props-value
+    position -- the "nullable T" and "array of T" spellings, dotted
+    type names, conditional/branch-dependent key-setting, keys set via
+    a helper-method call, `Inertia.Defer(...)`/`Inertia.Merge(...)`-
+    wrapped values, dynamically computed keys, and props built in a
+    different method/class than where `Render` is called.
   }
   InertiaScanner = public static class
   private
@@ -74,6 +96,8 @@ type
     const TOK_OPENBLOCK = Token.T_OpenBlock;
     const TOK_CLOSEBLOCK = Token.T_CloseBlock;
     const TOK_DOT = Token.T_Dot;
+    const TOK_LESS = Token.T_Less;
+    const TOK_GREATER = Token.T_Greater;
     const TOK_ASSIGN = Token.T_Assignment;
     const TOK_BEGIN = Token.TI_begin;
     const TOK_TRY = Token.TI_try;
@@ -96,10 +120,13 @@ type
     end;
 
     {
-      Resolves a type NAME as written in source (e.g. "UserDto", "Int32")
-      -- never a generic/array spelling, those are out of scope for v1
-      (see the class-level doc comment) -- to a RawTypeRef, or nil if
-      unresolvable. Checks Oxygene's built-in BCL aliases first, then
+      Resolves a single, undecorated type NAME as written in source
+      (e.g. "UserDto", "Int32") to a RawTypeRef, or nil if unresolvable.
+      Never sees a whole generic spelling: ParseTypeAnnotation splits one
+      into its outer name plus arguments and calls this only for each
+      LEAF name. Array and dotted spellings remain out of scope entirely
+      (see the class-level doc comment). Checks Oxygene's built-in BCL
+      aliases first, then
       aKnownTypes (the target assembly's own types, keyed by short Name --
       short-name lookup can collide across namespaces, last-registered
       wins, an accepted v1 heuristic limitation).
@@ -166,6 +193,159 @@ type
         result := aKnownTypes[aWrittenName]
       else
         result := nil;
+    end;
+
+    {
+      Maps a generic type's OUTER name as written in source, plus the
+      number of type arguments actually parsed, to the CLR generic type
+      DEFINITION name RawTypeRef.FullName expects -- e.g. "List" with one
+      argument to the backtick-1 List definition under
+      System.Collections.Generic. Returns an empty string for an
+      unrecognized name OR a mismatched argument count; an arity mismatch
+      is deliberately treated exactly like an unknown name, since a
+      wrongly-shaped RawTypeRef would render something misleading
+      downstream rather than nothing at all.
+
+      KEEP THIS SET IN SYNC WITH Tsgen.Ir.TypeMapper's own
+      IsCollectionGenericDef / IsDictionaryGenericDef: those two decide
+      which generic definitions actually map to a TypeScript array or
+      Record type, so recognizing a name here that TypeMapper does not
+      know would resolve the local only for its props field to render
+      "unknown" anyway -- worse than leaving it unresolved, because the
+      existing "could not resolve type of Inertia props key" diagnostic
+      would no longer fire to say why. Nullable is the one deliberate
+      addition: TypeMapper handles the backtick-1 System.Nullable
+      definition inside MapTypeRef directly, not via either predicate.
+    }
+    class method ResolveGenericDefName(aOuterName: String; aArgCount: Int32): String;
+    begin
+      var oneArg :=
+        (aOuterName = 'List') or (aOuterName = 'IList') or (aOuterName = 'IEnumerable') or
+        (aOuterName = 'ICollection') or (aOuterName = 'IReadOnlyList') or
+        (aOuterName = 'IReadOnlyCollection') or (aOuterName = 'HashSet') or (aOuterName = 'ISet');
+      var twoArgs :=
+        (aOuterName = 'Dictionary') or (aOuterName = 'IDictionary') or (aOuterName = 'IReadOnlyDictionary');
+
+      if oneArg and (aArgCount = 1) then
+        result := 'System.Collections.Generic.' + aOuterName + '`1'
+      else if twoArgs and (aArgCount = 2) then
+        result := 'System.Collections.Generic.' + aOuterName + '`2'
+      else if (aOuterName = 'Nullable') and (aArgCount = 1) then
+        result := 'System.Nullable`1'
+      else
+        result := '';
+    end;
+
+    {
+      Recursive-descent parser for a type annotation in the colon position
+      of a local variable declaration, per the grammar: an identifier,
+      optionally followed by an angle-bracketed, comma-separated list of
+      further type annotations. Returns the resolved RawTypeRef, or nil
+      when any part of it is unresolvable (unknown outer name, arity
+      mismatch, or any argument itself unresolved) -- nil means "do not
+      register this local", which lets the props field that reads it fall
+      into the pre-existing "could not resolve type of Inertia props key"
+      diagnostic path. No new diagnostic is raised here.
+
+      aNextIdx always reports where parsing should resume, INCLUDING on
+      failure: the balanced closing angle bracket is located by a depth
+      count before the arguments are parsed at all, so an argument list
+      this parser cannot make sense of still leaves the caller's resume
+      position intact rather than desynchronizing the statement scan.
+      Oxygene spells the shift operators "shl"/"shr", so there is no
+      merged double-angle-bracket token to worry about the way a C-family
+      tokenizer would have.
+
+      Argument RawTypeRefs come straight from aKnownTypes where they are
+      assembly types -- those instances are shared, and treated as
+      read-only everywhere after construction, so no copy is made.
+    }
+    class method ParseTypeAnnotation(aTokens: List<ScanToken>; aStart: Int32; aKnownTypes: Dictionary<String, RawTypeRef>;
+                                      out aNextIdx: Int32): RawTypeRef;
+    begin
+      result := nil;
+      aNextIdx := aStart;
+      if (aStart >= aTokens.Count) or (aTokens[aStart].Id <> TOK_IDENTIFIER) then exit;
+
+      var outerName := aTokens[aStart].Text;
+      var i := aStart + 1;
+
+      if (i >= aTokens.Count) or (aTokens[i].Id <> TOK_LESS) then begin
+        // Plain, undecorated name -- may still resolve to nil.
+        aNextIdx := i;
+        result := ResolveTypeName(outerName, aKnownTypes);
+        exit;
+      end;
+
+      {
+        Locate the balanced closing bracket first. A ';' or ':=' before it
+        means this was never a well-formed annotation at all (or the
+        source is mid-edit) -- stop there rather than scanning to EOF, and
+        let the caller's own skip-to-semicolon loop take over.
+      }
+      var openIdx := i;
+      var closeIdx: Int32 := -1;
+      var depth: Int32 := 0;
+      var j := openIdx;
+      while j < aTokens.Count do begin
+        var id := aTokens[j].Id;
+        if id = TOK_LESS then
+          inc(depth)
+        else if id = TOK_GREATER then begin
+          dec(depth);
+          if depth = 0 then begin
+            closeIdx := j;
+            break;
+          end;
+        end
+        else if (id = TOK_SEMICOLON) or (id = TOK_ASSIGN) then
+          break;
+        inc(j);
+      end;
+
+      if closeIdx < 0 then begin
+        aNextIdx := j;
+        exit;
+      end;
+      aNextIdx := closeIdx + 1;
+
+      var args := new List<RawTypeRef>;
+      var argCount: Int32 := 0;
+      var allResolved := true;
+      var k := openIdx + 1;
+      while k < closeIdx do begin
+        var argNextIdx: Int32;
+        var argType := ParseTypeAnnotation(aTokens, k, aKnownTypes, out argNextIdx);
+        inc(argCount);
+        if argType = nil then
+          allResolved := false
+        else
+          args.Add(argType);
+
+        if argNextIdx <= k then begin
+          // No progress -- an unexpected token where an argument belongs.
+          allResolved := false;
+          break;
+        end;
+        k := argNextIdx;
+
+        if k >= closeIdx then break;
+        if aTokens[k].Id = TOK_COMMA then
+          inc(k)
+        else begin
+          allResolved := false;
+          break;
+        end;
+      end;
+
+      if (not allResolved) or (argCount = 0) then exit;
+
+      var defName := ResolveGenericDefName(outerName, argCount);
+      if defName = '' then exit;
+
+      result := new RawTypeRef;
+      result.FullName := defName;
+      result.TypeArguments.AddRange(args);
     end;
 
     {
@@ -287,12 +467,25 @@ type
 
     {
       Parses `var IDENT := new TypeName [(...)];` or
-      `var IDENT : TypeName [:= ...];` starting at the `var` token.
-      Populates aLocalTypes always; additionally registers IDENT in
-      aPropsFields (with an empty field list to accumulate into) when its
-      resolved type is named exactly "InertiaProps" or "Dictionary" --
-      the only two shapes confirmed usable for Inertia props construction
-      (§22.1/§22.3). Returns the index to resume scanning from.
+      `var IDENT : TypeAnnotation [:= ...];` starting at the `var` token.
+      The two branches resolve their type differently: the inferred
+      (`:=`) branch still reads a single identifier after `new` and
+      resolves it through ResolveTypeName, while the colon branch hands
+      the whole annotation to ParseTypeAnnotation, so a generic one
+      resolves structurally (see the class-level doc comment for the
+      recognized families and for what stays out of scope).
+
+      Populates aLocalTypes when a type resolved; additionally registers
+      IDENT in aPropsFields (with an empty field list to accumulate into)
+      when the name WRITTEN right after the colon -- or after `new` -- is
+      exactly "InertiaProps" or "Dictionary", the only two shapes
+      confirmed usable for Inertia props construction (§22.1/§22.3).
+      That registration deliberately keys off the written outer name
+      alone, unchanged by generic support: a props var declared as a
+      Dictionary of String to Object still registers as a props var even
+      though Object does not resolve, so its own type never lands in
+      aLocalTypes -- exactly the pre-existing behavior. Returns the index
+      to resume scanning from.
     }
     class method ParseVarDecl(aTokens: List<ScanToken>; aVarIdx: Int32; aKnownTypes: Dictionary<String, RawTypeRef>;
                                aLocalTypes: Dictionary<String, RawTypeRef>; aPropsFields: Dictionary<String, List<InertiaPropsField>>): Int32;
@@ -306,6 +499,8 @@ type
       inc(i);
 
       var writtenName := '';
+      var annotated := false;
+      var annotatedType: RawTypeRef := nil;
       if (i < aTokens.Count) and (aTokens[i].Id = TOK_ASSIGN) then begin
         // var IDENT := new TypeName ...
         inc(i);
@@ -313,10 +508,14 @@ type
           writtenName := aTokens[i + 1].Text;
       end
       else if (i < aTokens.Count) and (aTokens[i].Id = TOK_COLON) then begin
-        // var IDENT : TypeName [:= ...]
+        // var IDENT : TypeAnnotation [:= ...]
         inc(i);
         if (i < aTokens.Count) and (aTokens[i].Id = TOK_IDENTIFIER) then
           writtenName := aTokens[i].Text;
+        annotated := true;
+        var afterTypeIdx: Int32;
+        annotatedType := ParseTypeAnnotation(aTokens, i, aKnownTypes, out afterTypeIdx);
+        i := afterTypeIdx;
       end;
 
       // Skip to the statement's terminating top-level ';'.
@@ -335,7 +534,11 @@ type
       end;
       result := i;
 
-      var resolvedType := ResolveTypeName(writtenName, aKnownTypes);
+      var resolvedType: RawTypeRef;
+      if annotated then
+        resolvedType := annotatedType
+      else
+        resolvedType := ResolveTypeName(writtenName, aKnownTypes);
       if resolvedType <> nil then
         aLocalTypes[varName] := resolvedType;
 
