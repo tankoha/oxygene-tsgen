@@ -4147,6 +4147,20 @@ nullability annotations on method PARAMETERS (`ParseMethodParams`
 unchanged), and treating a `new NamedType(...)` props value as
 implicitly non-null even though it can never be nil.
 
+**Downstream outcome** (`TeaTimeTracker`, commit `f5c0c31` and the swap
+after it): with §38/§39/§40 in, the generated types matched its
+hand-written `models.ts` semantically, and it did a PARTIAL swap —
+every interface now comes from the generated output, while the enums
+stay hand-written. Not a shortcoming of any of these three tasks: a
+`.d.ts`'s enums are ambient and have no runtime value, and that app
+uses enum members as real values. That gap is now recorded as
+`docs/DESIGN.md` §10.2 item 11 (a runtime-`.ts` output mode) — the
+first post-MVP item raised by the validation app rather than by the
+design doc itself. A second, smaller one surfaced with it and needed
+no tsgen change: `Props.SharedData` has no `[key: string]: unknown`
+index signature, which Inertia's own `usePage<T>()` constrains for, so
+the app intersects it frontend-side.
+
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass** (same
 total as §36 — this task changed `InertiaMode`'s snapshot content, not
 its case count).

@@ -1203,6 +1203,25 @@ As agreed at requirements-definition time, the following is the minimum bar:
 10. Incremental generation / watch mode / CI diff check (§9) — tackled as a
     developer-experience improvement once the CLI's core functionality has
     stabilized
+11. **Runtime-value output mode: emit a real `.ts` module instead of (or
+    alongside) the ambient `.d.ts`.** Raised by `TeaTimeTracker` on
+    2026-08-13 while swapping its hand-written types for generated ones,
+    and it is the one thing that blocked a complete swap. A `.d.ts`'s
+    `declare namespace ... export enum` is ambient: the enum has a TYPE
+    but no runtime value, so a frontend that uses enum members as actual
+    values (comparisons, computed object keys — `ThemeMode.Light`,
+    `BeverageType.GreenTea`) cannot get them from the generated output
+    and must keep hand-written duplicates of every enum. Emitting a
+    module with real `export enum` (or `export const X = {...} as const`
+    plus a literal-union type) declarations would close that gap. Note
+    this is a genuine output-shape change, not a flag on `DtsEmitter`:
+    a module's `export`s are not ambient globals, so consumers switch
+    from bare `TeaTimeTracker.Models.Foo` references to imports, and the
+    two modes cannot simply be concatenated into one file (§10.1's
+    "single-file vs split-file" switch is the closest existing
+    precedent). Interfaces themselves are unaffected either way — this
+    is only about declarations that need to exist at runtime, which
+    today means enums.
 
 **Note (post-pivot, not yet reordered — see `HANDOFF.md` §6)**: this priority
 list predates the Inertia.js pivot and has not yet been reworked to place the new
