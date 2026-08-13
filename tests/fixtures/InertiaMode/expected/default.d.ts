@@ -40,9 +40,11 @@ declare namespace Props {
     badge: InertiaMode.BadgeDto;
     tags: InertiaMode.TagDto[] | null;
     lookup: Record<string, InertiaMode.RoleDto> | null;
+    sureTags: InertiaMode.TagDto[];
+    maybeNote: string | null;
     savedAt: string | null;
   }
-  export type ProfileFormErrors = Partial<Record<'user' | 'isAdmin' | 'bio' | 'meta' | 'note' | 'age' | 'joined' | 'badge' | 'tags' | 'lookup' | 'savedAt', string>>;
+  export type ProfileFormErrors = Partial<Record<'user' | 'isAdmin' | 'bio' | 'meta' | 'note' | 'age' | 'joined' | 'badge' | 'tags' | 'lookup' | 'sureTags' | 'maybeNote' | 'savedAt', string>>;
   export interface EmptyProps extends Props.SharedData {
   }
   export type EmptyFormErrors = Partial<Record<never, string>>;

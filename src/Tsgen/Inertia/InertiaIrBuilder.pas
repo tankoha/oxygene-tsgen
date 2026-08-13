@@ -97,6 +97,33 @@ type
       result.FullName := aFullName;
     end;
 
+    {
+      Nullability for one synthesized props/shared-data field.
+
+      An explicit source annotation wins outright over the provider
+      chain, and that ordering is not a new policy -- it is the same one
+      real type members already follow, reached by the only route
+      available here. For a reflected member, an explicit "nullable"/
+      "not nullable" reaches Provider 1 (OxygeneSourceScanProvider) and
+      short-circuits the chain before ValueTypeDefaultProvider or
+      --nrt-unknown-policy ever see it. A props field cannot use that
+      route at all: it is synthesized from indexer assignments rather
+      than reflected, so there is no declaring type name to key the scan
+      dictionary on, and the empty string passed below can never match
+      anything the scan recorded. Applying InertiaScanner's own captured
+      annotation here is what restores Provider 1's role for these
+      fields (HANDOFF.md §40). --nrt-unknown-policy is untouched by
+      this: it only ever decided what an UNKNOWN field renders as, and
+      an annotated field is not unknown.
+    }
+    class method ResolveFieldNullability(aProviders: List<INullabilityProvider>; aField: InertiaPropsField): NullabilityKind;
+    begin
+      if aField.ExplicitNullability <> NullabilityKind.Unknown then
+        result := aField.ExplicitNullability
+      else
+        result := NullabilityProviderChain.Resolve(aProviders, '', aField.Name, aField.TypeRef);
+    end;
+
     class method MakeStringToStringDictionaryTypeRef: RawTypeRef;
     begin
       result := new RawTypeRef;
@@ -214,7 +241,7 @@ type
         var sm := new IrMemberLite;
         sm.Name := field.Name;
         sm.TypeRef := field.TypeRef;
-        sm.Nullability := NullabilityProviderChain.Resolve(providers, '', field.Name, field.TypeRef);
+        sm.Nullability := ResolveFieldNullability(providers, field);
         sharedType.Members.Add(sm);
       end;
 
@@ -223,11 +250,15 @@ type
       {
         Synthesized Props interfaces have no real reflected member to
         look up in the NRT scan dictionary (they're assembled from
-        source-level indexer assignments, not a real CLR type), so pass
-        an empty type-name key -- OxygeneSourceScanProvider naturally
-        returns Unknown for a key that can never match anything it
-        scanned, and ValueTypeDefaultProvider still correctly resolves
-        value-typed/Nullable<T> fields from their TypeRef alone.
+        source-level indexer assignments, not a real CLR type), so the
+        empty type-name key ResolveFieldNullability passes down means
+        OxygeneSourceScanProvider naturally returns Unknown for a key
+        that can never match anything it scanned, while
+        ValueTypeDefaultProvider still correctly resolves value-typed/
+        Nullable<T> fields from their TypeRef alone. An explicit source
+        annotation is applied ahead of that chain -- see
+        ResolveFieldNullability for why that is the same ordering real
+        members already get, not a special case.
       }
       for each page in aPages do begin
         var propsType := new IrTypeLite;
@@ -258,7 +289,7 @@ type
           var im := new IrMemberLite;
           im.Name := field.Name;
           im.TypeRef := field.TypeRef;
-          im.Nullability := NullabilityProviderChain.Resolve(providers, '', field.Name, field.TypeRef);
+          im.Nullability := ResolveFieldNullability(providers, field);
           propsType.Members.Add(im);
         end;
 

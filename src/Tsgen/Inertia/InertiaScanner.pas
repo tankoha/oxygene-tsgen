@@ -14,6 +14,19 @@ type
   public
     Name: String;
     TypeRef: RawTypeRef;
+    {
+      Non-Unknown only when the local this field's value was read from
+      carried an explicit "nullable"/"not nullable" annotation in source
+      (HANDOFF.md §40). This is the ONLY nullability signal a props field
+      can ever carry: a props field is synthesized from indexer
+      assignments, not reflected from a real type member, so
+      InertiaIrBuilder has no type name to key an
+      OxygeneSourceScanProvider lookup on -- it passes an empty one, which
+      by construction never matches anything the source scan recorded.
+      Without an annotation here, every reference-typed props field is
+      Unknown and falls to whatever --nrt-unknown-policy says.
+    }
+    ExplicitNullability: NullabilityKind := NullabilityKind.Unknown;
   end;
 
   InertiaPageProps = public class
@@ -73,17 +86,30 @@ type
     through a generic argument still gets emitted by the reachability
     BFS.
 
+    A colon annotation may also carry an explicit "nullable" or "not
+    nullable" prefix, read by the same rule NullabilityScanner applies
+    to a real type member (HANDOFF.md §40). The prefix is recorded
+    against the local and travels to any props field whose value is
+    that bare local identifier, as InertiaPropsField.ExplicitNullability
+    -- the only way source can state a props field's nullability at all,
+    since the provider chain structurally cannot see a synthesized
+    props field (see that field's own doc comment).
+
     Deliberately NOT resolved this round (falls back to Unknown + a
     diagnostic naming the unresolved key, per §24 scope decision):
     `new class(...)` anonymous-literal values, a generic spelling
     anywhere OTHER than a local's colon annotation -- an inferred
     "var x := new List<Foo>;" local, a generic-typed method parameter,
     a "new NamedType<Foo>(...)" expression directly in props-value
-    position -- the "nullable T" and "array of T" spellings, dotted
+    position -- the "array of T" spelling, dotted
     type names, conditional/branch-dependent key-setting, keys set via
     a helper-method call, `Inertia.Defer(...)`/`Inertia.Merge(...)`-
     wrapped values, dynamically computed keys, and props built in a
-    different method/class than where `Render` is called.
+    different method/class than where `Render` is called. Nullability
+    annotations on method PARAMETERS are likewise not read
+    (ParseMethodParams is unchanged), and a "new NamedType" props value
+    is not treated as implicitly non-null even though it can never be
+    nil -- both are possible follow-ups, deliberately not bundled here.
   }
   InertiaScanner = public static class
   private
@@ -107,6 +133,8 @@ type
     const TOK_VAR = Token.TI_var;
     const TOK_NEW = Token.TI_new;
     const TOK_CLASS = Token.TI_class;
+    const TOK_NULLABLE = Token.TI_nullable;
+    const TOK_NOT = Token.TI_not;
     const TOK_STRING = Token.T_String;
     const TOK_INTEGER = Token.T_Integer;
     const TOK_REAL = Token.T_Real;
@@ -475,9 +503,16 @@ type
       resolves structurally (see the class-level doc comment for the
       recognized families and for what stays out of scope).
 
+      The colon branch also accepts an optional "nullable"/"not nullable"
+      prefix ahead of the type, recording it in aLocalNullability under
+      IDENT (HANDOFF.md §40). The prefix tokens are consumed only when a
+      "nullable" keyword is actually present, so a lone "not" is left
+      exactly where it was for the type parse to reject, as before.
+
       Populates aLocalTypes when a type resolved; additionally registers
       IDENT in aPropsFields (with an empty field list to accumulate into)
-      when the name WRITTEN right after the colon -- or after `new` -- is
+      when the name WRITTEN right after the colon -- past any nullability
+      prefix -- or after `new` is
       exactly "InertiaProps" or "Dictionary", the only two shapes
       confirmed usable for Inertia props construction (§22.1/§22.3).
       That registration deliberately keys off the written outer name
@@ -488,7 +523,8 @@ type
       to resume scanning from.
     }
     class method ParseVarDecl(aTokens: List<ScanToken>; aVarIdx: Int32; aKnownTypes: Dictionary<String, RawTypeRef>;
-                               aLocalTypes: Dictionary<String, RawTypeRef>; aPropsFields: Dictionary<String, List<InertiaPropsField>>): Int32;
+                               aLocalTypes: Dictionary<String, RawTypeRef>; aLocalNullability: Dictionary<String, NullabilityKind>;
+                               aPropsFields: Dictionary<String, List<InertiaPropsField>>): Int32;
     begin
       var i := aVarIdx + 1;
       if (i >= aTokens.Count) or (aTokens[i].Id <> TOK_IDENTIFIER) then begin
@@ -501,6 +537,7 @@ type
       var writtenName := '';
       var annotated := false;
       var annotatedType: RawTypeRef := nil;
+      var explicitKind := NullabilityKind.Unknown;
       if (i < aTokens.Count) and (aTokens[i].Id = TOK_ASSIGN) then begin
         // var IDENT := new TypeName ...
         inc(i);
@@ -508,8 +545,25 @@ type
           writtenName := aTokens[i + 1].Text;
       end
       else if (i < aTokens.Count) and (aTokens[i].Id = TOK_COLON) then begin
-        // var IDENT : TypeAnnotation [:= ...]
+        // var IDENT : [not] [nullable] TypeAnnotation [:= ...]
         inc(i);
+
+        {
+          Same rule as NullabilityScanner.ScanMemberDecl reads on a real
+          type member: an optional "not", then "nullable". Looked ahead
+          rather than consumed as it goes, so a bare "not" with no
+          "nullable" behind it advances nothing and stays an ordinary
+          (unresolvable) annotation, exactly as before this was added.
+        }
+        var isNot := (i < aTokens.Count) and (aTokens[i].Id = TOK_NOT);
+        var nullableIdx := i;
+        if isNot then nullableIdx := i + 1;
+        if (nullableIdx < aTokens.Count) and (aTokens[nullableIdx].Id = TOK_NULLABLE) then begin
+          if isNot then explicitKind := NullabilityKind.IsNotNullable
+          else explicitKind := NullabilityKind.IsNullable;
+          i := nullableIdx + 1;
+        end;
+
         if (i < aTokens.Count) and (aTokens[i].Id = TOK_IDENTIFIER) then
           writtenName := aTokens[i].Text;
         annotated := true;
@@ -542,6 +596,15 @@ type
       if resolvedType <> nil then
         aLocalTypes[varName] := resolvedType;
 
+      {
+        Recorded even when the type itself did not resolve: the
+        annotation is a fact about what the source says, independent of
+        whether this scanner could map the type name, and an unresolved
+        field renders as "unknown" either way.
+      }
+      if explicitKind <> NullabilityKind.Unknown then
+        aLocalNullability[varName] := explicitKind;
+
       if (writtenName = 'InertiaProps') or (writtenName = 'Dictionary') then
         aPropsFields[varName] := new List<InertiaPropsField>;
     end;
@@ -552,9 +615,15 @@ type
       aFieldList when the value resolves, or warning via aDiagnostics
       (naming aVarName and the key) when it doesn't. Returns the index to
       resume scanning from.
+
+      A value that is exactly one identifier naming a local carries that
+      local's explicit nullability annotation, if it had one, onto the
+      field (HANDOFF.md §40). No other value shape can: a literal or a
+      `new` expression has no annotated declaration to read one from.
     }
     class method ParsePropsAssignment(aTokens: List<ScanToken>; aIdentIdx: Int32; aKnownTypes: Dictionary<String, RawTypeRef>;
                                        aParamTypes: Dictionary<String, RawTypeRef>; aLocalTypes: Dictionary<String, RawTypeRef>;
+                                       aLocalNullability: Dictionary<String, NullabilityKind>;
                                        aFieldList: List<InertiaPropsField>; aDiagnostics: DiagnosticList; aVarName: String): Int32;
     begin
       var i := aIdentIdx + 1; // at '['
@@ -594,6 +663,9 @@ type
       var field := new InertiaPropsField;
       field.Name := key;
       field.TypeRef := valueType;
+      if (exprEnd - exprStart = 1) and (aTokens[exprStart].Id = TOK_IDENTIFIER)
+         and aLocalNullability.ContainsKey(aTokens[exprStart].Text) then
+        field.ExplicitNullability := aLocalNullability[aTokens[exprStart].Text];
       aFieldList.Add(field);
     end;
 
@@ -717,6 +789,14 @@ type
       matches the pre-existing "no optional-field support" scope
       decision (docs/DESIGN.md §5.4 / HANDOFF.md §24.6), not a new one
       made here.
+
+      A field's ExplicitNullability rides along with the field object
+      itself, so the same first-resolved-wins rule the TypeRef follows
+      applies to it too. A later call site annotating the same key
+      differently is not separately warned about -- the existing
+      conflict diagnostic covers the case that actually breaks output
+      (two incompatible TYPES for one key), and nullability disagreement
+      alone still produces valid TypeScript.
     }
     class method MergePages(aRawPages: List<InertiaPageProps>; aDiagnostics: DiagnosticList): List<InertiaPageProps>;
     begin
@@ -767,6 +847,7 @@ type
       var methodBodyDepth: Int32 := -1;
       var paramTypes := new Dictionary<String, RawTypeRef>;
       var localTypes := new Dictionary<String, RawTypeRef>;
+      var localNullability := new Dictionary<String, NullabilityKind>;
       var propsFields := new Dictionary<String, List<InertiaPropsField>>;
 
       {
@@ -795,6 +876,7 @@ type
         if tok.Id = TOK_METHOD then begin
           paramTypes := new Dictionary<String, RawTypeRef>;
           localTypes := new Dictionary<String, RawTypeRef>;
+          localNullability := new Dictionary<String, NullabilityKind>;
           propsFields := new Dictionary<String, List<InertiaPropsField>>;
           inMethodBody := false;
           sharedRegionActive := false;
@@ -835,6 +917,7 @@ type
             methodBodyDepth := -1;
             paramTypes := new Dictionary<String, RawTypeRef>;
             localTypes := new Dictionary<String, RawTypeRef>;
+            localNullability := new Dictionary<String, NullabilityKind>;
             propsFields := new Dictionary<String, List<InertiaPropsField>>;
             sharedRegionActive := false;
             sharedRegionKnownVars := nil;
@@ -842,12 +925,12 @@ type
           if depth > 0 then dec(depth);
         end
         else if inMethodBody and (tok.Id = TOK_VAR) then begin
-          i := ParseVarDecl(aTokens, i, aKnownTypes, localTypes, propsFields);
+          i := ParseVarDecl(aTokens, i, aKnownTypes, localTypes, localNullability, propsFields);
           continue;
         end
         else if inMethodBody and (tok.Id = TOK_IDENTIFIER) and propsFields.ContainsKey(tok.Text)
                 and (i + 1 < aTokens.Count) and (aTokens[i + 1].Id = TOK_OPENBLOCK) then begin
-          i := ParsePropsAssignment(aTokens, i, aKnownTypes, paramTypes, localTypes, propsFields[tok.Text], aDiagnostics, tok.Text);
+          i := ParsePropsAssignment(aTokens, i, aKnownTypes, paramTypes, localTypes, localNullability, propsFields[tok.Text], aDiagnostics, tok.Text);
           continue;
         end
         else if inMethodBody and (tok.Id = TOK_IDENTIFIER) and (tok.Text = 'Inertia')

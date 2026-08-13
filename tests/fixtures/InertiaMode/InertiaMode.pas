@@ -170,6 +170,21 @@ type
       // type, keeping this fixture's type count down.
       var lookup: Dictionary<String, RoleDto> := new Dictionary<String, RoleDto>;
       props['Lookup'] := lookup;
+      // Explicit nullability annotations on props locals (HANDOFF.md
+      // §40). These two exist to prove the annotation beats
+      // --nrt-unknown-policy in BOTH directions, which is the whole
+      // point of having them: a props field is invisible to the
+      // provider chain, so without an annotation its nullability is
+      // whatever the policy flag happens to say.
+      //   - SureTags must stay non-null in the DEFAULT case, where the
+      //     policy is "nullable" and every other unannotated
+      //     reference-typed field here renders "| null".
+      //   - MaybeNote must keep its "| null" in the NON-NULL case,
+      //     where the policy strips it off every unannotated one.
+      var sureTags: not nullable List<TagDto> := new List<TagDto>;
+      props['SureTags'] := sureTags;
+      var maybeNote: nullable String := 'maybe';
+      props['MaybeNote'] := maybeNote;
       result := Inertia.Render('pages/Profile', props);
     end;
 
