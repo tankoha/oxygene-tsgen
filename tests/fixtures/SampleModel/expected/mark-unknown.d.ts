@@ -19,7 +19,7 @@ declare namespace SampleModel {
     notes: string; // nrt: unknown
     currentStatus: SampleModel.Status;
     registeredOn: string;
-    currentRating: SampleModel.Rating; // nrt: unknown
+    currentRating: SampleModel.Rating;
     firstName: string | null;
     lastName: string | null;
   }

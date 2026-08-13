@@ -53,6 +53,16 @@ type
       else begin
         result.FullName := aType.FullName;
         result.IsEnum := aType.IsEnum;
+        // HANDOFF.md §35 follow-up: same "wide" definition IsEnum already
+        // uses (a BCL enum reports IsEnum too, not just a target-assembly
+        // one). This also marks BCL structs (DateTime/Decimal/...) true,
+        // but those already resolve non-null via
+        // ValueTypeDefaultProvider.IsKnownValueType, so behavior for them
+        // is unchanged. A BCL struct NOT on that list (e.g. TimeSpan) now
+        // goes Unknown -> non-null instead, which is more correct, not
+        // less: a non-Nullable<T> value type can never be null in the
+        // serialized JSON either way.
+        result.IsStruct := aType.IsValueType and (not aType.IsEnum) and (not aType.IsPrimitive);
       end;
     end;
 
@@ -281,6 +291,7 @@ type
             end
             else begin
               rt.Kind := RawTypeKind.ClassLike;
+              rt.IsStruct := isStruct;
 
               for each p in t.GetProperties(BindingFlags.Public or BindingFlags.Instance) do begin
                 var m := new RawMember;

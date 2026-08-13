@@ -43,6 +43,24 @@ type
       nested RawTypeRef).
     }
     IsEnum: Boolean;
+    {
+      True when this is a LEAF reference (not IsArray, no TypeArguments) to
+      a type that is a CLR value type (Oxygene "record") but neither an
+      enum nor a BCL primitive -- the exact mirror of IsEnum above, for
+      struct/record types instead of enum types (HANDOFF.md §35's
+      deliberately-deferred follow-up, now implemented). Lets
+      Tsgen.Nrt.NullabilityProviders.ValueTypeDefaultProvider recognize an
+      unannotated struct-typed member as a non-nullable CLR value type,
+      same as Int32/Boolean/an assembly enum, without needing its own
+      hardcoded name list. Set by AssemblyLoader.BuildTypeRef (from
+      aType.IsValueType and (not aType.IsEnum) and (not aType.IsPrimitive),
+      reflection path) and by Tsgen.Inertia.InertiaScanner.Scan's
+      aKnownTypes construction (from RawType.IsStruct, source-scan path) --
+      both call sites needed the fix, same reason as IsEnum (HANDOFF.md
+      §33). Always false for array/generic-instantiation RawTypeRefs
+      themselves.
+    }
+    IsStruct: Boolean;
 
     // Human-readable form for diagnostics (e.g. "List<Foo>", "Foo[]") -- not used for type-mapping logic itself.
     method DisplayName: String;
@@ -88,6 +106,13 @@ type
     NamespaceName: String;
     Name: String;
     Kind: RawTypeKind;
+    // True for a Kind = ClassLike type that originated from a CLR struct
+    // (Oxygene "record") rather than a class -- RawTypeKind gains no
+    // separate Struct value on purpose, so every existing "Kind =
+    // RawTypeKind.ClassLike" branch (IrBuilder, InertiaIrBuilder,
+    // DtsEmitter) keeps treating a struct exactly like a class, unchanged.
+    // Set by AssemblyLoader.Load from its own local isStruct.
+    IsStruct: Boolean;
     Members: List<RawMember> := new List<RawMember>;
     EnumValues: List<RawEnumValue> := new List<RawEnumValue>;
   end;

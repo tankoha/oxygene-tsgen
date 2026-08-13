@@ -65,6 +65,19 @@ type
     property Title: not nullable String read write := '';
   end;
 
+  // A record (CLR struct), not a class -- proves the source-scan path
+  // (InertiaScanner.Scan's aKnownTypes construction) propagates
+  // RawType.IsStruct the same way it already propagates IsEnum
+  // (HANDOFF.md §33): an unannotated struct-typed local passed to props
+  // must resolve non-null, not "| null", since that propagation is this
+  // task's second call site (the enum version of this same fix was only
+  // ever proven against a real DLL, never pinned by a snapshot -- see
+  // HANDOFF.md §35's follow-up finding).
+  BadgeDto = public record
+  public
+    property Points: Integer read write;
+  end;
+
   // Deliberately never reachable from any page -- must NOT appear in
   // the output. Proves the reachability filter actually filters.
   UnusedDto = public class
@@ -125,6 +138,13 @@ type
       // SampleModel's reflection-based RegisteredOn property).
       var joined: DateOnly := new DateOnly(2024, 1, 1);
       props['Joined'] := joined;
+      // Struct-typed (record) local, unannotated declaration with no
+      // initializer -- a real pattern (a value-typed local defaults to
+      // its zero value without assignment). Proves InertiaScanner's
+      // source-scan path resolves an unannotated struct-typed field to
+      // non-null (HANDOFF.md §35 follow-up), not "| null".
+      var badge: BadgeDto;
+      props['Badge'] := badge;
       result := Inertia.Render('pages/Profile', props);
     end;
 

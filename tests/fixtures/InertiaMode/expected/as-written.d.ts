@@ -11,6 +11,9 @@ declare namespace InertiaMode {
   export interface MetaDto {
     Title: string;
   }
+  export interface BadgeDto {
+    Points: number;
+  }
   export interface SharedUserDto {
     Email: string;
   }
@@ -32,9 +35,10 @@ declare namespace Props {
     Note: unknown | null;
     Age: number;
     Joined: string;
+    Badge: InertiaMode.BadgeDto;
     SavedAt: string | null;
   }
-  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note' | 'Age' | 'Joined' | 'SavedAt', string>>;
+  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note' | 'Age' | 'Joined' | 'Badge' | 'SavedAt', string>>;
   export interface EmptyProps extends Props.SharedData {
   }
   export type EmptyFormErrors = Partial<Record<never, string>>;
