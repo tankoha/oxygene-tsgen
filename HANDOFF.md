@@ -2628,8 +2628,11 @@ rather than just planned:
 generic-typed locals ("generic-typed parameters/locals" in the
 scanner's own doc comment) — colon-annotated generic LOCALS
 (`var x: List<Foo> := ...;`, the List/Dictionary/... families) are now
-resolved, see §39. Generic method PARAMETERS and everything listed
-above still stand as scoped out.
+resolved, see §39. The `nullable T` spelling on a local is likewise
+resolved now, and such an annotation additionally sets the props
+field's nullability outright, see §40. Generic method PARAMETERS,
+nullability annotations on parameters, and everything listed above
+still stand as scoped out.
 
 ---
 
@@ -4066,6 +4069,83 @@ aggregate. Verified by baseline diff, not by eye: the pre-change binary
 was rebuilt from a stash and its output diffed against the new one —
 the diff is exactly the new interface block plus the one `records:`
 line.
+
+## 40. Explicit nullability annotations on Inertia props locals (2026-08-13)
+
+**Trigger**: with §38/§39 done, `TeaTimeTracker` went to swap its
+hand-written `models.ts` for the generated types and hit the last
+mismatch: `records`/`record` render `| null` where the hand-written
+types say non-null. The user chose "state the truth in the server
+source" over passing `--nrt-unknown-policy non-null` or accepting
+`| null` — and that turned out to be **impossible to express** before
+this change. A third gap, found by the validation app doing exactly
+what it exists for.
+
+**Root cause, worth stating precisely**: a props field is synthesized
+from `propsVar['key'] := value;` assignments, not reflected from a real
+CLR member, so it has no declaring type name. `InertiaIrBuilder` passed
+an empty string as the type-name key to
+`NullabilityProviderChain.Resolve`, and `OxygeneSourceScanProvider`
+keys its dictionary on `TypeFullName + '.' + MemberName` — the empty
+key can never match anything the scan recorded. So Provider 1, the
+provider whose entire job is "the author wrote an explicit
+annotation", was structurally unreachable for every props field.
+`NullabilityScanner` compounds this by scanning only type-body members
+(its `depth = typeDepth` guard), never method-body locals. Net effect:
+every reference-typed props field was `Unknown`, and
+`--nrt-unknown-policy` — a fallback for when the author said nothing —
+was silently the ONLY thing deciding it, with no way to override.
+
+Worse, writing the annotation before this fix made output strictly
+worse, not better: `ParseVarDecl`'s colon branch expected an identifier
+immediately after the `:`, so `var records: not nullable List<...>`
+failed to resolve the type at all and the field fell to `unknown`.
+
+**Fix, two files**:
+- `InertiaScanner`: `ParseVarDecl` gained an `aLocalNullability`
+  dictionary and reads an optional `not`/`nullable` prefix in the colon
+  position using the *same rule* as `NullabilityScanner.ScanMemberDecl`
+  (optional `not`, then `nullable`). The prefix is looked ahead rather
+  than consumed as it goes, so a lone `not` advances nothing and stays
+  an ordinary unresolvable annotation exactly as before.
+  `InertiaPropsField` gained `ExplicitNullability`, set by
+  `ParsePropsAssignment` when the value is exactly one identifier
+  naming an annotated local — no other value shape has an annotated
+  declaration to read. `MergePages` needed no code change (the field
+  object carries the flag), only a doc note that first-resolved wins
+  for it too.
+- `InertiaIrBuilder`: new `ResolveFieldNullability` used by both the
+  page-fields and shared-fields loops — explicit annotation first,
+  chain otherwise. This is **not** a new precedence rule: for a real
+  member an explicit annotation already short-circuits the chain at
+  Provider 1 before `ValueTypeDefaultProvider` or the policy flag see
+  it. This restores that same ordering for fields that cannot reach
+  Provider 1 at all.
+
+**Side effect, deliberate**: consuming the prefix also means
+`var x: nullable Foo := ...;` now resolves its TYPE (previously the
+prefix derailed the identifier expectation and the local went
+unregistered). That retires the "`nullable T` spelling" item from
+§24.6's limitation list.
+
+**Fixture**: `InertiaMode`'s `Profile` gained
+`var sureTags: not nullable List<TagDto>` and
+`var maybeNote: nullable String`, chosen to pin **both directions** of
+policy-independence in the snapshots — the acceptance bar is not "the
+annotation is read" but "the annotation beats the flag":
+- `default` (policy `nullable`): `sureTags: InertiaMode.TagDto[];`
+  non-null while the unannotated `tags` right beside it is `| null`.
+- `non-null` (policy strips `| null`): `maybeNote: string | null;`
+  keeps it while `tags`/`lookup`/`savedAt` all go bare.
+17/17 pass; only `InertiaMode`'s three snapshots changed. Real-DLL
+output was byte-identical to the committed `index.d.ts` at this point
+(TeaTimeTracker had no annotations yet) — confirming no regression
+before the app side changed.
+
+**Still out of scope, named so they aren't mistaken for oversights**:
+nullability annotations on method PARAMETERS (`ParseMethodParams`
+unchanged), and treating a `new NamedType(...)` props value as
+implicitly non-null even though it can never be nil.
 
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass** (same
 total as §36 — this task changed `InertiaMode`'s snapshot content, not

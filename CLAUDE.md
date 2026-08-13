@@ -82,11 +82,16 @@ the first-resolved type and firing a conflict diagnostic, and a
 key-only-at-the-second-call-site field (`SavedAt`) proving the union,
 an unannotated struct-typed props local (`badge: BadgeDto`) proving the
 source-scan `IsStruct` propagation emits it non-null (`HANDOFF.md`
-§38), and colon-annotated generic locals (`tags: List<TagDto>` with
+§38), colon-annotated generic locals (`tags: List<TagDto>` with
 `TagDto` reachable only through the generic argument, plus `lookup:
 Dictionary<String, RoleDto>`) proving `ParseTypeAnnotation` and the
-BFS-through-`TypeArguments` path (`HANDOFF.md` §39) —
-see `HANDOFF.md` §24.5/§26/§27/§29/§30/§37/§38/§39). Also: enum-valued flags (`--mode`,
+BFS-through-`TypeArguments` path (`HANDOFF.md` §39), and a
+`not nullable`/`nullable` annotated pair (`sureTags`/`maybeNote`)
+pinning BOTH directions of "an explicit annotation beats
+`--nrt-unknown-policy`" — `sureTags` stays non-null under the default
+`nullable` policy, `maybeNote` keeps `| null` under `non-null`
+(`HANDOFF.md` §40) —
+see `HANDOFF.md` §24.5/§26/§27/§29/§30/§37/§38/§39/§40). Also: enum-valued flags (`--mode`,
 `--enum-style`, `--nrt-unknown-policy`, `--naming-policy`) reject an
 unrecognized value with a clean error instead of silently defaulting
 (`HANDOFF.md` §30) — don't reintroduce a silent-fallback `else` branch
@@ -222,7 +227,17 @@ come from a colon-annotated local whose annotation is generic
 Dictionary families plus `Nullable`, resolved recursively by
 `ParseTypeAnnotation`, `HANDOFF.md` §39; keep its name→definition map
 in sync with `TypeMapper`'s `IsCollectionGenericDef`/
-`IsDictionaryGenericDef` sets). Anything else
+`IsDictionaryGenericDef` sets). **A colon annotation may also carry an
+explicit `nullable`/`not nullable` prefix, and for a props field that
+is the ONLY way source can state nullability at all** (`HANDOFF.md`
+§40): a synthesized props field has no declaring type name, so
+`InertiaIrBuilder` passes an empty key that `OxygeneSourceScanProvider`
+can never match — Provider 1 is structurally unreachable for it, and
+without an annotation `--nrt-unknown-policy` alone decides. The
+annotation is applied ahead of the chain in
+`InertiaIrBuilder.ResolveFieldNullability`; that mirrors the
+precedence a real member already gets, so don't "fix" it into a
+provider-chain entry. Anything else
 (anonymous `new class(...)` literals, cross-method props construction,
 conditional key-setting, `Inertia.Defer`/`Inertia.Merge`, generic
 method *parameters*, `:= new List<...>` inference form) falls back to
