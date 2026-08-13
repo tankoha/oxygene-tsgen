@@ -32,8 +32,9 @@ declare namespace Props {
     Note: unknown | null;
     Age: number;
     Joined: string;
+    SavedAt: string | null;
   }
-  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note' | 'Age' | 'Joined', string>>;
+  export type ProfileFormErrors = Partial<Record<'User' | 'IsAdmin' | 'Bio' | 'Meta' | 'Note' | 'Age' | 'Joined' | 'SavedAt', string>>;
   export interface EmptyProps extends Props.SharedData {
   }
   export type EmptyFormErrors = Partial<Record<never, string>>;

@@ -472,6 +472,89 @@ type
       result := i;
     end;
 
+    {
+      Merges multiple raw `InertiaPageProps` entries that share the same
+      `ComponentName` into one, unioning their `Fields` (HANDOFF.md §37,
+      Fable5 review finding on the M3-dts-validation.md real-DLL run):
+      real Oxygene apps commonly `Inertia.Render` the same component from
+      more than one action (e.g. a GET action rendering a form and a POST
+      action re-rendering the same form with validation errors), and
+      before this fix each such call site produced its OWN
+      `InertiaPageProps` entry, so `InertiaIrBuilder.Build` (which treats
+      every entry in its `aPages` list as a distinct page, one Props +
+      one FormErrors type each) emitted the SAME Props/FormErrors type
+      twice. Harmless for `interface` (TypeScript's declaration merging
+      tolerates a repeated identical `interface`), but a hard compile
+      error for the `type XxxFormErrors = Partial<Record<...>>` alias
+      DtsEmitter.EmitType emits for `FormErrorsLike` -- TypeScript does
+      NOT allow redeclaring a `type` alias ("Duplicate identifier").
+
+      Fixed here, in the Scanner, rather than in InertiaIrBuilder: this
+      keeps `InertiaIrBuilder.Build`'s existing "one entry in aPages = one
+      page" assumption correct and unchanged, and matches the existing
+      responsibility split -- the Scanner's job is to collect and
+      normalize what call-site parsing found (it already does the
+      analogous cross-file accumulation for `aSharedData.Fields`),
+      IrBuilder's job is to convert an already-resolved page list into
+      IR, not to know anything about "the same component rendered from
+      two call sites" being a possibility.
+
+      A field name present at more than one call site for the same
+      component keeps its FIRST-resolved type (call-site order = file
+      enumeration order, then within-file token order, both already
+      deterministic) and, if a LATER call site resolves that same field
+      name to a different type, warns via aDiagnostics naming the
+      component, the field, and both conflicting type display names,
+      rather than silently picking one or trying to union the types
+      (v1 has no TS union-type synthesis path for this). A field present
+      at only one call site is still included -- the union, not the
+      intersection -- since v1 has no way to know whether a field is
+      genuinely conditional or just happens to be set from a different
+      action; unioning and always treating every field as required
+      matches the pre-existing "no optional-field support" scope
+      decision (docs/DESIGN.md §5.4 / HANDOFF.md §24.6), not a new one
+      made here.
+    }
+    class method MergePages(aRawPages: List<InertiaPageProps>; aDiagnostics: DiagnosticList): List<InertiaPageProps>;
+    begin
+      result := new List<InertiaPageProps>;
+      var mergedByComponent := new Dictionary<String, InertiaPageProps>;
+      var fieldIndexByComponent := new Dictionary<String, Dictionary<String, Int32>>;
+
+      for each page in aRawPages do begin
+        var merged: InertiaPageProps;
+        var fieldIndex: Dictionary<String, Int32>;
+        if mergedByComponent.ContainsKey(page.ComponentName) then begin
+          merged := mergedByComponent[page.ComponentName];
+          fieldIndex := fieldIndexByComponent[page.ComponentName];
+        end
+        else begin
+          merged := new InertiaPageProps;
+          merged.ComponentName := page.ComponentName;
+          mergedByComponent[page.ComponentName] := merged;
+          fieldIndex := new Dictionary<String, Int32>;
+          fieldIndexByComponent[page.ComponentName] := fieldIndex;
+          result.Add(merged);
+        end;
+
+        for each field in page.Fields do begin
+          if fieldIndex.ContainsKey(field.Name) then begin
+            var existingField := merged.Fields[fieldIndex[field.Name]];
+            if existingField.TypeRef.DisplayName <> field.TypeRef.DisplayName then
+              aDiagnostics.AddWarning('Inertia page "' + page.ComponentName + '" renders prop "' + field.Name +
+                '" with conflicting types across multiple Render call sites (' + existingField.TypeRef.DisplayName +
+                ' from an earlier call site vs ' + field.TypeRef.DisplayName +
+                ' here) -- keeping the first-resolved type for the merged page.');
+            // Otherwise identical types at both call sites -- nothing to do, already merged.
+          end
+          else begin
+            fieldIndex[field.Name] := merged.Fields.Count;
+            merged.Fields.Add(field);
+          end;
+        end;
+      end;
+    end;
+
     class method ScanFile(aTokens: List<ScanToken>; aKnownTypes: Dictionary<String, RawTypeRef>; aResult: List<InertiaPageProps>;
                            aSharedData: InertiaSharedData; aDiagnostics: DiagnosticList);
     begin
@@ -620,11 +703,19 @@ type
         knownTypes[rt.Name] := typeRef;
       end;
 
+      var rawPages := new List<InertiaPageProps>;
       for each filePath in Directory.GetFiles(aSourceDir, '*.pas', SearchOption.AllDirectories) do begin
         var text := File.ReadAllText(filePath);
         var tokens := OxygeneTokenizer.Tokenize(text);
-        ScanFile(tokens, knownTypes, result, aSharedData, aDiagnostics);
+        ScanFile(tokens, knownTypes, rawPages, aSharedData, aDiagnostics);
       end;
+
+      {
+        Dedup by ComponentName, unioning fields across call sites
+        (HANDOFF.md §37) -- see MergePages's own doc comment for why this
+        happens here rather than in InertiaIrBuilder.
+      }
+      result := MergePages(rawPages, aDiagnostics);
     end;
   end;
 

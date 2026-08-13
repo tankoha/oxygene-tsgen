@@ -133,6 +133,31 @@ type
       result := 'x';
     end;
 
+    // Second Inertia.Render call site for the SAME component
+    // ("pages/Profile", also rendered from Profile above) -- the real-DLL
+    // pattern found in TeaTimeTracker (a GET action + a POST action both
+    // re-rendering the same page, e.g. on validation failure) that
+    // originally produced a duplicate `ProfileProps`/`ProfileFormErrors`
+    // declaration and, for the type-alias `ProfileFormErrors` specifically,
+    // an invalid "Duplicate identifier" .d.ts (HANDOFF.md §37). Exercises
+    // all three merge cases InertiaScanner.MergePages handles:
+    //   - "Bio": same key, same resolved type (String) as Profile's own
+    //     "Bio" -- merges silently, no warning.
+    //   - "IsAdmin": same key, but String here vs Boolean in Profile --
+    //     a genuine type conflict, must warn and keep Profile's Boolean
+    //     (first-resolved) rather than silently overwriting it.
+    //   - "SavedAt": a key ONLY this call site sets -- must still appear
+    //     in the merged ProfileProps/ProfileFormErrors (union, not
+    //     intersection).
+    method SaveProfile: Object;
+    begin
+      var props := new InertiaProps;
+      props['Bio'] := 'saved-bio';
+      props['IsAdmin'] := 'yes';
+      props['SavedAt'] := 'now';
+      result := Inertia.Render('pages/Profile', props);
+    end;
+
     // Props-less page (declared, never assigned) -- a legitimate case
     // per InertiaScanner.pas's ParseRenderCall comment. Exercises the
     // FormErrorsLike `never`-fallback in DtsEmitter.EmitType, since a

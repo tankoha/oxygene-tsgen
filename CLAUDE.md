@@ -68,10 +68,18 @@ registration proving Shared Data detection + its own reachability
 seeding, a bare `Inertia.Share(...)` call proving the
 detected-but-excluded diagnostic path, a shared field name that collides
 with a `SharedData` floor key after the naming-policy transform proving
-the duplicate-member skip-and-warn path, and its own `as-written` case
+the duplicate-member skip-and-warn path, its own `as-written` case
 proving `ClassLike`/`FormErrorsLike` casing stay consistent with each
-other under either naming policy — see `HANDOFF.md`
-§24.5/§26/§27/§29/§30). Also: enum-valued flags (`--mode`,
+other under either naming policy, and a second `Inertia.Render(...)` call
+site for the SAME component (`SaveProfile`, alongside `Profile`) proving
+`InertiaScanner.MergePages` (`HANDOFF.md` §37): one merged
+`ProfileProps`/`ProfileFormErrors` pair, not two (a real `TeaTimeTracker.dll`
+GET+POST-to-the-same-page pattern that used to emit an invalid,
+twice-declared `type ProfileFormErrors = ...` alias), a same-key/
+different-resolved-type field (`IsAdmin`: `Boolean` vs `String`) keeping
+the first-resolved type and firing a conflict diagnostic, and a
+key-only-at-the-second-call-site field (`SavedAt`) proving the union —
+see `HANDOFF.md` §24.5/§26/§27/§29/§30/§37). Also: enum-valued flags (`--mode`,
 `--enum-style`, `--nrt-unknown-policy`, `--naming-policy`) reject an
 unrecognized value with a clean error instead of silently defaulting
 (`HANDOFF.md` §30) — don't reintroduce a silent-fallback `else` branch
@@ -178,7 +186,17 @@ wrapping.
 propsVar)` call sites and the `propsVar['key'] := value;` assignments
 that built `propsVar` in the same method (the *only* pattern real
 Oxygene code can produce — Oxygene has no working object/collection-
-initializer syntax, `HANDOFF.md` §22.3); `InertiaIrBuilder` then does a
+initializer syntax, `HANDOFF.md` §22.3). `InertiaScanner.Scan` then
+merges every call site rendering the SAME component into one page
+(`MergePages`, `HANDOFF.md` §37) — fields union across call sites, a
+same-key/different-type conflict keeps the first-resolved type and
+warns — since real apps commonly render one component from more than
+one action (a GET + a POST re-rendering the same form), and
+`InertiaIrBuilder` treats every entry it's given as a distinct page
+(one Props + one FormErrors type each), so an un-merged duplicate
+produced an invalid, twice-declared `FormErrorsLike` `type` alias
+(TypeScript doesn't allow redeclaring a `type`, unlike an `interface`).
+`InertiaIrBuilder` then does a
 reachability BFS from each resolved field's type (reusing
 `IrBuilder.BuildType`, refactored out of `IrBuilder.Build` for exactly
 this reuse) so only types actually referenced from Page Props — not the

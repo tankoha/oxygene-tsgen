@@ -3316,6 +3316,13 @@ was written at all. Two separate root causes, both in
   `System.Version` comparison) rather than failing outright, and (4) the
   original runtime-directory addition, kept as the lowest-priority
   fallback for base BCL types (unchanged behavior for that part).
+  **Known follow-up (Fable5 review, 2026-08-13):** `DotnetSharedRoot` is
+  hardcoded to `C:\Program Files\dotnet\shared` — Windows-default-install
+  only. If this tool ever runs on Linux again (it started there, §pre-1)
+  or against a non-default dotnet root, derive it from `DOTNET_ROOT` or
+  from `RuntimeEnvironment.GetRuntimeDirectory()` (two levels up is
+  `shared\Microsoft.NETCore.App\<ver>` → `dotnet\shared`) instead. Small,
+  contained; not done now because every current consumer is this machine.
 - The type-enumeration loop now wraps each iteration's body in its own
   `try`/`except`: a type whose base-type/property/field resolution still
   throws (e.g. a genuinely unresolvable third-party dependency this tool
@@ -3414,10 +3421,16 @@ observed: `Controller.Profile`-shaped methods that appear twice in
 `TeaTimeTracker`'s source (once for `GET`, once for `POST` to the same
 Inertia page) currently produce two separate, identical
 `EditProps`/`ThemeProps`/`EditFormErrors`/`ThemeFormErrors` declarations
-in the output (harmless — TypeScript allows re-declaring an identical
-interface — but redundant). Pre-existing `InertiaScanner` behavior, not
-part of this task's scope; noted here in case it's worth a future
-`Dictionary`-by-component-name dedup pass in `InertiaIrBuilder.Build`.
+in the output. **Originally logged here as "harmless (TypeScript allows
+re-declaring an identical interface) but redundant"** — that was wrong
+for half of it: `interface` re-declaration is harmless, but `XxxFormErrors`
+is a `type` alias, and TypeScript does NOT allow redeclaring a `type`
+alias (a "Duplicate identifier" compile error), so the generated `.d.ts`
+actually failed to compile whenever the same component was rendered from
+more than one action — a real-world-common pattern (re-rendering a form
+on validation failure). **Fixed 2026-08-13, see §37** (Fable5 review
+finding on this exact real-DLL run, addressed as an additional task
+before this session's other work was considered done).
 
 **Verification**: `tools/run-tests.ps1` (no `-UpdateSnapshots` first, to
 confirm the change didn't alter any existing fixture's output — it
@@ -3808,6 +3821,123 @@ documentation pass):
 4. task 1 — `System.DateOnly`/`TimeOnly`
 5. task 2 — struct (Oxygene `record`) support
 6. this `HANDOFF.md` §36 + `CLAUDE.md` documentation pass
+7. task 5 (added by Fable5 review after §36, see §37) — merge duplicate
+   Inertia page declarations
 
-No push performed, per instructions. Final state: **7 fixtures, 17/17
-snapshot cases pass.**
+No push performed, per instructions.
+
+## 37. Merge duplicate Inertia page declarations across Render call sites (task 5, 2026-08-13)
+
+**Trigger**: Fable5 review of tasks 0-2's real-DLL output (§31's
+`TeaTimeTracker.dll` acceptance run) — approved tasks 0-2, but flagged
+the "two separate, identical `EditProps`/`ThemeProps`/
+`EditFormErrors`/`ThemeFormErrors` declarations" §31 had logged as merely
+"redundant" as actually a real bug: `EditFormErrors`/`ThemeFormErrors`
+are TypeScript `type` aliases (`DtsEmitter.EmitType`'s `FormErrorsLike`
+branch), and TypeScript does not allow redeclaring a `type` alias — a
+"Duplicate identifier" compile error, not a harmless duplicate like the
+`interface` re-declaration half of it. Any real app where the same
+Inertia component is rendered from more than one action (the common
+"GET shows a form, POST re-renders it with validation errors" pattern —
+exactly what `TeaTimeTracker`'s `RecordsController.Edit`/`Save` and
+`SettingsController.Theme`/`SaveTheme` do) would produce a `.d.ts` that
+fails `tsc`. Added as an explicit additional task (numbered 5, done
+after the original 0/3/4/1/2 order) rather than folded into task 0,
+since it's a distinct root cause (`InertiaScanner`/`InertiaIrBuilder`'s
+"one Render call site = one page" assumption, unrelated to `AssemblyLoader`).
+
+**Design** (Fable5's own call, implemented as specified): dedup pages by
+`ComponentName`, field list = union of every call site's fields.
+- A field name resolving to the SAME type at every call site merges
+  silently.
+- A field name resolving to DIFFERENT types across call sites keeps the
+  FIRST-resolved one and warns via `aDiagnostics`, naming the component,
+  the field, and both conflicting type display names — no attempt to
+  synthesize a TS union type for the field itself (out of v1's scope, and
+  arguably the wrong fix anyway — a genuine type conflict on the same
+  prop name across actions usually indicates the two actions aren't
+  really building "the same shape" and deserves a look, which is exactly
+  what surfacing it as a diagnostic rather than silently unioning
+  achieves).
+- A field present at only one call site is still included (union, not
+  intersection) — v1 has no way to distinguish "genuinely conditional
+  prop" from "just happens to be set from a different action", and the
+  pre-existing scope decision (`docs/DESIGN.md` §5.4 / `HANDOFF.md` §24.6)
+  is "no optional-field support," which this doesn't change, just applies
+  consistently to the merged field set.
+
+**Where the fix lives, and why**: `InertiaScanner.pas`, a new private
+`MergePages` class method, called once at the end of `Scan` (after the
+existing per-file `ScanFile` loop, which now accumulates into a local
+`rawPages` list instead of writing straight into `result`) — `result :=
+MergePages(rawPages, aDiagnostics);`. Considered `InertiaIrBuilder.Build`
+as the alternative site (it's the thing that actually creates one Props/
+FormErrors pair per `aPages` entry) but chose the Scanner instead:
+`InertiaIrBuilder.Build`'s "one entry in `aPages` = one page" assumption
+is correct and simple, and should stay that way — teaching it about
+"actually, entries might describe the same page and need merging" would
+push a collection-normalization concern into the IR-building stage,
+which is supposed to only convert an already-resolved page list, not
+resolve it further. The Scanner is also where the exact same shaped
+problem is already solved once, for `aSharedData.Fields` (cross-file
+accumulation via `ScanFile`'s in/out accumulator pattern) — `MergePages`
+is a second instance of "the Scanner's job is to normalize what call-site
+parsing found," not a new responsibility for it.
+
+**Fixture**: `tests/fixtures/InertiaMode/InertiaMode.pas`'s `Controller`
+gained a `SaveProfile` method — a second `Inertia.Render('pages/Profile',
+...)` call site (the same component `Profile` already renders), with
+`props['Bio'] := 'saved-bio';` (same key AND same resolved type,
+`String`, as `Profile`'s own `Bio` — merges silently), `props['IsAdmin']
+:= 'yes';` (same key, but `String` here vs `Boolean` in `Profile` — a
+genuine, deliberate type conflict, since `Profile` sets `IsAdmin` from a
+`Boolean` literal), and `props['SavedAt'] := 'now';` (a key only this
+call site sets — proves the union, not intersection). Confirmed by
+running `tsgen` directly against the rebuilt fixture DLL before touching
+any snapshot: "Found 2 Inertia.Render call site(s)" (was 3 raw call
+sites — `Profile`, `SaveProfile`, `Empty` — merged down to 2 pages,
+`pages/Profile` and `pages/Empty`), a single `ProfileProps`/
+`ProfileFormErrors` pair (not two), `isAdmin: boolean;` (first-resolved
+type kept), a new `savedAt: string | null;` member, and the exact
+expected diagnostic: `Inertia page "pages/Profile" renders prop
+"IsAdmin" with conflicting types across multiple Render call sites
+(System.Boolean from an earlier call site vs System.String here) --
+keeping the first-resolved type for the merged page.` Then ran
+`-UpdateSnapshots` and confirmed via `git diff` that ONLY `InertiaMode`'s
+three snapshots changed (adding `savedAt` to `ProfileProps`/
+`ProfileFormErrors`, no other fixture affected — none of the other six
+render the same component twice).
+
+**Real-DLL re-verification** against the same `TeaTimeTracker.dll` as
+§31/§36 (no source changes to `TeaTimeTracker`, `--mode inertia`, `--out`
+a scratchpad directory):
+
+```
+Loading assembly: ...\TeaTimeTracker.dll
+Loaded 13 type(s).
+Found nullability info for 7 member(s).
+Found 3 Inertia.Render call site(s) and 1 shared-data field(s).
+Wrote <scratchpad>\index.d.ts
+Warning: skipped 4 non-public/nested/generic/unsupported-kind type(s); their members will not appear in the output.
+Warning: could not resolve type of Inertia props key "Records" on props -- emitting "unknown" for this field
+Warning: no type mapping for (unresolved), emitting "unknown" (1 member(s), e.g. IndexProps.Records)
+```
+
+"Found 3 Inertia.Render call site(s)" (was 5 in §36's run — `Index`,
+`Edit`×2, `Theme`×2 raw call sites merged down to the 3 distinct pages:
+`Index`/`Edit`/`Theme`). The emitted `.d.ts` now has exactly ONE
+`EditProps`/`EditFormErrors`/`ThemeProps`/`ThemeFormErrors` each (see the
+full listing in §36 for the unchanged parts — `Rating`, `beverageType`,
+`brewedAt`, etc. are all identical to that run, only the duplicate-page
+issue is different here). No type-conflict warning fired for
+`TeaTimeTracker` itself — its GET/POST pairs happen to set the same
+fields to consistent types, so the conflict path only shows up in the
+fixture's deliberately-constructed case, not this real app; that's a
+property of `TeaTimeTracker`'s own code, not evidence the conflict path
+is unreachable in general.
+
+**Verification**: `tools/run-tests.ps1` — **17/17 cases pass** (same
+total as §36 — this task changed `InertiaMode`'s snapshot content, not
+its case count).
+
+Final state: **7 fixtures, 17/17 snapshot cases pass.**
