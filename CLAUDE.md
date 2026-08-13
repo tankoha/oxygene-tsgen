@@ -46,7 +46,8 @@ values via its deliberately-still-`Unknown` `Notes` field — see
 `--naming-policy`, `HANDOFF.md` §28; also a `Status`-typed unannotated
 enum property, a `DateOnly`-typed unannotated property, and a `Rating`
 `record`/struct type referenced by an unannotated property, covering
-`HANDOFF.md` §§33-35 respectively),
+`HANDOFF.md` §§33-35 respectively — since §38 that unannotated
+`Rating`-typed property also proves the struct non-null default),
 `ExternalDependency` (a same-folder sibling dependency DLL a target
 assembly's own type inherits from — regression coverage for
 `AssemblyLoader.Load`'s dependency-resolution fix, `HANDOFF.md` §31;
@@ -78,8 +79,14 @@ GET+POST-to-the-same-page pattern that used to emit an invalid,
 twice-declared `type ProfileFormErrors = ...` alias), a same-key/
 different-resolved-type field (`IsAdmin`: `Boolean` vs `String`) keeping
 the first-resolved type and firing a conflict diagnostic, and a
-key-only-at-the-second-call-site field (`SavedAt`) proving the union —
-see `HANDOFF.md` §24.5/§26/§27/§29/§30/§37). Also: enum-valued flags (`--mode`,
+key-only-at-the-second-call-site field (`SavedAt`) proving the union,
+an unannotated struct-typed props local (`badge: BadgeDto`) proving the
+source-scan `IsStruct` propagation emits it non-null (`HANDOFF.md`
+§38), and colon-annotated generic locals (`tags: List<TagDto>` with
+`TagDto` reachable only through the generic argument, plus `lookup:
+Dictionary<String, RoleDto>`) proving `ParseTypeAnnotation` and the
+BFS-through-`TypeArguments` path (`HANDOFF.md` §39) —
+see `HANDOFF.md` §24.5/§26/§27/§29/§30/§37/§38/§39). Also: enum-valued flags (`--mode`,
 `--enum-style`, `--nrt-unknown-policy`, `--naming-policy`) reject an
 unrecognized value with a clean error instead of silently defaulting
 (`HANDOFF.md` §30) — don't reintroduce a silent-fallback `else` branch
@@ -101,13 +108,16 @@ admits a public, non-nested, non-generic, non-enum, non-primitive
 `t.IsValueType` type the same way it admits a class (`RawTypeKind
 .ClassLike`, same property/field reflection); no Loader+IR+Emitter
 compound change was actually needed here, unlike the nested-type case
-this might otherwise look similar to (`HANDOFF.md` §35). One real gap
-remains, deliberately unfixed: an unannotated member whose type is one
-of the target assembly's own structs still renders `| null` — only
-enum-typed members get the "assembly-defined value type defaults to
-non-null" treatment so far (`RawTypeRef.IsEnum`, `HANDOFF.md` §33); see
-§35's own "follow-up finding" for the small, contained change this would
-need if it's ever prioritized.
+this might otherwise look similar to (`HANDOFF.md` §35). The one gap
+§35 left open is now closed (`HANDOFF.md` §38): an unannotated
+struct-typed member defaults to non-null via `RawTypeRef.IsStruct`/
+`RawType.IsStruct`, propagated at the same two call sites as `IsEnum`
+(`AssemblyLoader.BuildTypeRef` reflection path *and*
+`InertiaScanner.Scan`'s `aKnownTypes` source-scan path) and checked
+alongside it in `ValueTypeDefaultProvider`. `IsStruct` is deliberately
+a flag on the existing `ClassLike` kind, NOT a third `RawTypeKind`
+value — don't "clean it up" into one; every `Kind = RawTypeKind
+.ClassLike` comparison downstream relies on structs staying `ClassLike`.
 
 **Nullability is resolved through the `INullabilityProvider` chain**
 (`src/Tsgen/Nrt/NullabilityProviders.pas`, `HANDOFF.md` §21), not a
@@ -118,16 +128,18 @@ non-nullable unless explicitly annotated otherwise) — first non-`Unknown`
 answer wins. Consequence worth remembering: an unannotated *value-typed*
 member (`Int32`, `Boolean`, `DateOnly`/`TimeOnly`, etc.) is no longer
 `Unknown` at all, so `--nrt-unknown-policy` has nothing to act on for
-it — only unannotated *reference-typed* members (and, still, unannotated
-*struct-typed* members — see the "structs ARE supported" note above,
-`HANDOFF.md` §35) stay genuinely `Unknown`. Since `HANDOFF.md` §33,
+it — only unannotated *reference-typed* members stay genuinely
+`Unknown` (struct-typed members joined the value-type non-null default
+in `HANDOFF.md` §38). Since `HANDOFF.md` §33,
 `ValueTypeDefaultProvider` also recognizes an unannotated member typed
 as one of the TARGET ASSEMBLY'S OWN enums as non-nullable, via
 `RawTypeRef.IsEnum` (propagated from `RawType.Kind = Enum` at both
 `RawTypeRef`-building call sites — `AssemblyLoader.BuildTypeRef`
 *and* `InertiaScanner.Scan`'s `aKnownTypes` construction, since an
 Inertia props/shared-data field's type is resolved by written name from
-source, not reflection; both needed the fix, see §33) — not by adding
+source, not reflection; both needed the fix, see §33; `HANDOFF.md` §38
+mirrors the exact same double-propagation pattern for structs via
+`IsStruct`) — not by adding
 every possible enum name to `IsKnownValueType`'s hardcoded list, which
 could never enumerate a target assembly's own type names up front the
 way it can the fixed BCL primitive set. `--nrt-unknown-policy` has three
@@ -204,9 +216,16 @@ whole assembly — get emitted, plus one synthesized interface per page
 (always namespace-wrapped under a shared `'Props'` namespace, never left
 bare at top level, since a bare top-level `export` silently turns the
 whole `.d.ts` into an ES module). v1 resolves literal/identifier/
-non-generic `new NamedType(...)` prop values only; anything else
+non-generic `new NamedType(...)` prop values; an identifier's type may
+come from a colon-annotated local whose annotation is generic
+(`var records: List<TastingRecordSummary> := ...;` — the List/
+Dictionary families plus `Nullable`, resolved recursively by
+`ParseTypeAnnotation`, `HANDOFF.md` §39; keep its name→definition map
+in sync with `TypeMapper`'s `IsCollectionGenericDef`/
+`IsDictionaryGenericDef` sets). Anything else
 (anonymous `new class(...)` literals, cross-method props construction,
-conditional key-setting, `Inertia.Defer`/`Inertia.Merge`) falls back to
+conditional key-setting, `Inertia.Defer`/`Inertia.Merge`, generic
+method *parameters*, `:= new List<...>` inference form) falls back to
 `unknown` + a diagnostic rather than guessing — see `HANDOFF.md` §24.6
 for the full, deliberate limitations list before extending this.
 `InertiaIrBuilder.Build` also emits a paired `IrTypeKindLite.FormErrorsLike`

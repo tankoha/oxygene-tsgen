@@ -2624,6 +2624,13 @@ rather than just planned:
   dedicated regression fixture before relying on this in a
   multi-namespace real project.
 
+**Update (2026-08-13)**: the original v1 scope also excluded
+generic-typed locals ("generic-typed parameters/locals" in the
+scanner's own doc comment) — colon-annotated generic LOCALS
+(`var x: List<Foo> := ...;`, the List/Dictionary/... families) are now
+resolved, see §39. Generic method PARAMETERS and everything listed
+above still stand as scoped out.
+
 ---
 
 ## 25. Self-review fix: CLI arg parsing had no bounds checking (Windows hands-on, 2026-08-02)
@@ -3700,7 +3707,8 @@ no mention of the referencing member's own nullability. Not adding it
 unrequested, per this session's explicit scope discipline instruction (a
 task turning out to need something adjacent-but-distinct is exactly what
 tasks 3/4 already were split out for) — flagging it here instead so
-it's a deliberate, visible decision, not a missed case. The `SampleModel`
+it's a deliberate, visible decision, not a missed case. **(Since
+resolved — implemented as sketched here, see §38, 2026-08-13.)** The `SampleModel`
 fixture below makes this visible on purpose: `currentRating` responds to
 `--nrt-unknown-policy` exactly like the deliberately-`Unknown`-reference-type
 `notes` field does (`| null` under default, bare + `// nrt: unknown`
@@ -3935,6 +3943,129 @@ fields to consistent types, so the conflict path only shows up in the
 fixture's deliberately-constructed case, not this real app; that's a
 property of `TeaTimeTracker`'s own code, not evidence the conflict path
 is unreachable in general.
+
+## 38. Unannotated struct-typed members default to non-null (§35's follow-up, 2026-08-13)
+
+**Trigger**: `TeaTimeTracker`'s HANDOFF item 2 — the two remaining
+prerequisites for replacing its hand-written `models.ts` with generated
+types. This is prerequisite (b): `rating: TeaTimeTracker.Models.Rating |
+null` where the hand-written type correctly says non-null. Exactly the
+change §35's "Follow-up finding, deliberately NOT implemented this
+round" paragraph already sketched — designed this round by Fable5
+(main session), implemented by a Sonnet 5 agent per the model-selection
+policy (a fully-specified mirror of an existing pattern), commit
+`88f6842`.
+
+**Fix — a precise mirror of §33's enum fix, four locations**:
+
+- `RawTypeRef` gained `IsStruct: Boolean` (alongside `IsEnum`), and
+  `RawType` gained `IsStruct: Boolean` — deliberately a flag on the
+  existing `ClassLike` kind, NOT a third `RawTypeKind` value, so no
+  `Kind = RawTypeKind.ClassLike` comparison anywhere (IrBuilder,
+  InertiaIrBuilder, DtsEmitter) changes behavior.
+- `AssemblyLoader.BuildTypeRef`'s leaf branch sets `result.IsStruct :=
+  aType.IsValueType and (not aType.IsEnum) and (not aType.IsPrimitive)`
+  — the same expression as `Load`'s own §35 `isStruct` filter. This is
+  the "broad" definition (BCL structs like `DateTime`/`Decimal` also get
+  the flag), following `IsEnum`'s own precedent (true for BCL enums
+  too): for structs already in `IsKnownValueType` nothing changes, and
+  for ones that aren't (`TimeSpan`, ...) non-null is semantically MORE
+  correct — a non-`Nullable<T>` value type can never serialize to JSON
+  `null`.
+- `AssemblyLoader.Load` sets `rt.IsStruct := isStruct` on the `RawType`.
+- `InertiaScanner.Scan`'s `aKnownTypes` construction propagates
+  `typeRef.IsStruct := rt.IsStruct` — the second call site §33 taught us
+  about (a props/shared-data field's type is resolved by written name
+  from source, not reflection, so `BuildTypeRef` alone doesn't cover it).
+- `ValueTypeDefaultProvider.TryGetNullability` adds `or
+  aTypeRef.IsStruct` to the existing `IsKnownValueType(...) or
+  aTypeRef.IsEnum` check.
+
+**Fixtures**: `SampleModel` needed no source change (`User.CurrentRating:
+Rating`, unannotated, was §35's own fixture) — its `default`/
+`mark-unknown`/`as-written` snapshots dropped the `| null`/`// nrt:
+unknown` on `currentRating` exactly as predicted; `union-nonnull` was
+already bare. `InertiaMode` gained a `BadgeDto = public record` and an
+unannotated `var badge: BadgeDto; props['Badge'] := badge;` in
+`Profile` — this pins the SOURCE-SCAN propagation path in a snapshot
+(`badge: InertiaMode.BadgeDto;`, non-null), which §33's enum version
+never had (it was only ever exercised against the real DLL). 17/17
+cases pass; no other fixture's snapshot changed.
+
+**Real-DLL acceptance** (same `TeaTimeTracker.dll`/`--source` as §36):
+`rating: TeaTimeTracker.Models.Rating;` — `| null` gone, everything
+else byte-identical to §36+§37's baseline, diagnostics unchanged.
+
+## 39. InertiaScanner resolves generic type annotations on locals (2026-08-13)
+
+**Trigger**: `TeaTimeTracker`'s HANDOFF item 2, prerequisite (a) — the
+sole reason `IndexProps.records` stayed `unknown`: `var records:
+List<TastingRecordSummary> := fRepository.GetAll();` (its
+`RecordsController.Index`, the repo-documented "annotated local"
+pattern) never resolved, because `ParseVarDecl` read only a single
+identifier after the `:`. Designed this round by Fable5 (main session);
+implemented by an Opus 5 agent per the model-selection policy (the
+tokenizer-scanner/generics-interaction territory `CLAUDE.md` explicitly
+reserves for it), commit `7174424`.
+
+**Key design fact**: everything downstream already handled generic
+`RawTypeRef`s (§23's `TypeMapper.MapTypeRef` recursion;
+`InertiaIrBuilder.CollectReferencedTypes` already walks
+`TypeArguments`, so the element type gets BFS-emitted for free). The
+entire change is `InertiaScanner.pas` producing a proper generic
+`RawTypeRef` — no IR/Mapper/Emitter change.
+
+**Scope (deliberate, unchanged elsewhere)**: only the colon-annotation
+form `var IDENT: GenericType<...> [:= ...];`. Recognized outer names
+mirror `TypeMapper.IsCollectionGenericDef`/`IsDictionaryGenericDef`
+exactly (List/IList/IEnumerable/ICollection/IReadOnlyList/
+IReadOnlyCollection/HashSet/ISet at arity 1, Dictionary/IDictionary/
+IReadOnlyDictionary at arity 2) plus `Nullable` → `System.Nullable``1`;
+the new `ResolveGenericDefName` helper is the one place to keep in sync
+with `TypeMapper`'s sets. Type arguments resolve recursively (nested
+generics work; Oxygene spells shift as `shr`, so there is no `>>`
+token-splitting problem — `Token.T_Less`/`T_Greater` exist and were
+confirmed against the Elements SDK DLL before implementation). Still
+out of scope, unchanged: `:= new List<...>` inference form, generic
+`new` in prop-value position, generic method parameters, `nullable T`
+annotations, `array of T`, dot-qualified type names. Resolution failure
+(unknown outer name / arity mismatch / unresolvable argument) returns
+nil — the local stays unregistered and the existing "could not resolve
+type of Inertia props key" diagnostic fires; no new diagnostic was
+added.
+
+**Implementation notes** (Opus 5's calls, worth keeping):
+- `ParseTypeAnnotation` locates the balanced `>` FIRST (depth count)
+  and sets the resume index unconditionally, then parses arguments
+  inside that span — "failure still advances the scan correctly" is
+  structural, not per-branch bookkeeping. A `;`/`:=` before the
+  balanced `>` aborts at that token.
+- `ParseVarDecl` keeps capturing the outer written name and its
+  `propsFields` registration test (`'InertiaProps'`/`'Dictionary'`)
+  verbatim, so `var props: Dictionary<String, Object>` behaves exactly
+  as before (Object unresolvable → local unregistered, props var still
+  registered). An explicit `annotated` flag prevents the colon branch
+  from silently falling back to the old single-name path.
+
+**Fixture**: `InertiaMode` gained `TagDto` (reachable ONLY via
+`List<TagDto>` — proves BFS-through-`TypeArguments` on the source-scan
+path) and two annotated locals in `Profile`: `tags: List<TagDto>` and
+`lookup: Dictionary<String, RoleDto>`. Snapshots: `tags:
+InertiaMode.TagDto[] | null;` / `lookup: Record<string,
+InertiaMode.RoleDto> | null;` (`| null` is correct per policy — an
+unannotated reference-typed local is still `Unknown`, unchanged
+principle), bare under `non-null`, `'tags' | 'lookup'` joining
+`ProfileFormErrors`. 17/17 pass; only `InertiaMode`'s three snapshots
+changed.
+
+**Real-DLL acceptance** (same setup as §36): `records:
+TeaTimeTracker.Models.TastingRecordSummary[] | null;` plus the
+`TastingRecordSummary` interface (5 members) now emitted; both
+`Records` diagnostics gone, leaving only the "skipped 4 ... type(s)"
+aggregate. Verified by baseline diff, not by eye: the pre-change binary
+was rebuilt from a stash and its output diffed against the new one —
+the diff is exactly the new interface block plus the one `records:`
+line.
 
 **Verification**: `tools/run-tests.ps1` — **17/17 cases pass** (same
 total as §36 — this task changed `InertiaMode`'s snapshot content, not
